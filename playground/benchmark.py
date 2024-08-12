@@ -15,16 +15,34 @@ from jax import jit, lax, vmap
 import jax.numpy as jnp
 
 
-def scatter_add(
+# def scatter_add(
+#     operand,  # [operand_size]
+#     updates,  # [updates_size]
+#     indices,  # [updates_size, 1]
+# ):
+#     # Define dimension numbers
+#     update_window_dims = tuple()
+#     inserted_window_dims = (0,)
+#     scatter_dims_to_operand_dims = (0,)
+#     res = jax.lax.scatter_add(
+#         operand,
+#         indices,
+#         updates,
+#         dimension_numbers=jax.lax.ScatterDimensionNumbers(update_window_dims, inserted_window_dims, scatter_dims_to_operand_dims),
+#         mode="drop",
+#     )
+#     return res
+
+def scatter(
     operand,  # [operand_size]
     updates,  # [updates_size]
     indices,  # [updates_size, 1]
 ):
     # Define dimension numbers
-    update_window_dims = tuple()
     inserted_window_dims = (0,)
+    update_window_dims = tuple()
     scatter_dims_to_operand_dims = (0,)
-    res = jax.lax.scatter_add(
+    res = jax.lax.scatter(
         operand,
         indices,
         updates,
@@ -33,7 +51,8 @@ def scatter_add(
     )
     return res
 
-scatter_add_jit = jax.jit(scatter_add)
+# scatter_add_jit = jax.jit(scatter_add)
+scatter_add_jit = jax.jit(scatter)
 
 
 operand_size = 1000
@@ -43,16 +62,31 @@ indices_size = 1_000_000
 rng = jax.random.PRNGKey(0)
 
 operand = jnp.zeros((operand_size,))
-updates = jnp.ones((indices_size))
+# updates = jnp.ones((indices_size))
+updates = jax.random.uniform(rng, shape=(indices_size,))
 indices = jax.random.randint(rng, shape=(indices_size, 1), minval=0, maxval=operand_size)
 
-# scatter_add_jit(operand, updates, indices).block_until_ready()
+
+# warm up
+scatter_add_jit(operand, updates, indices).block_until_ready()
 
 starting_time = default_timer()
-scatter_add_jit(operand, updates, indices).block_until_ready()
+res = scatter_add_jit(operand, updates, indices).block_until_ready()
 # time = timeit(scatter_add_jit(operand, updates, indices).block_until_ready())
 time = default_timer() - starting_time
 print(f"{time} s")
+print(res)
+
+# # Deterministic test
+# for i in range(100):
+#     print(f"Run {i}")
+#     old_res = res
+#     operand = jnp.zeros((operand_size,))
+#     updates = jnp.ones((indices_size))
+#     indices = jax.random.randint(rng, shape=(indices_size, 1), minval=0, maxval=operand_size)
+#     res = scatter_add_jit(operand, updates, indices)
+#     assert jnp.allclose(old_res, res)
+
 
 # # For f which outputs a single array, this simulates vmap using Python map
 # pymap = lambda f: lambda *args: jnp.stack(list(map(f, *args)))
