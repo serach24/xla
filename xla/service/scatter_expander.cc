@@ -393,6 +393,60 @@ static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
   return scatter_loop_trip_count;
 }
 
+// This is work-inefficient version
+HloInstruction* CreateScan(HloComputation* parent, HloInstruction* updates){
+  // HloComputation::Builder builder("scan_computation");
+
+  auto updates_shape = updates->shape();
+  // Get the length of the input array
+  int64_t n = updates_shape.dimensions(0);
+
+  // Calculate the number of iterations needed (log_2(n))
+  int64_t log_n = static_cast<int64_t>(std::ceil(std::log2(n)));
+
+  // Placeholder for offset calculation (2^d)
+  int64_t offset;
+
+  // start to traverse
+  auto* prev_array = updates;
+  HloInstruction* new_array = nullptr;
+  for (int64_t d = 0; d < log_n; ++d){
+    offset = 1 << d;
+    std::vector<int64_t> start_indices = {0};
+    std::vector<int64_t> end_indices = {n-offset};
+    std::vector<int64_t> strides = {1};
+    
+    auto shifted_array_shape = ShapeUtil::MakeShape(updates_shape.element_type(), {n-offset});
+    auto padding_array_shape = ShapeUtil::MakeShape(updates_shape.element_type(), {offset});
+
+    auto* shifted_array = parent->AddInstruction(
+        HloInstruction::CreateSlice(shifted_array_shape, prev_array, start_indices, end_indices, strides));
+    auto* padding_array = parent->AddInstruction(
+        HloInstruction::CreateSlice(padding_array_shape, prev_array, start_indices, {offset}, strides));
+
+    auto* concatenated_array = parent->AddInstruction(
+        HloInstruction::CreateConcatenate(updates_shape, {padding_array, shifted_array}, 0));
+    new_array = parent->AddInstruction(
+        HloInstruction::CreateBinary(updates_shape, HloOpcode::kAdd, prev_array, concatenated_array));
+    prev_array = new_array;
+  }
+  return new_array;
+}
+
+HloComputation* SortingComparison(HloModule* module, const PrimitiveType indices_type, const PrimitiveType values_type){
+  HloComputation::Builder builder("sorting_computation");
+  auto key_shape = ShapeUtil::MakeShape(indices_type, {});
+  auto value_shape = ShapeUtil::MakeShape(values_type, {});
+  auto param0 = builder.AddInstruction(HloInstruction::CreateParameter(0, key_shape, "lhs_key"));
+  auto param1 = builder.AddInstruction(HloInstruction::CreateParameter(1, key_shape, "rhs_key"));
+  builder.AddInstruction(HloInstruction::CreateParameter(2, value_shape, "lhs_value"));
+  builder.AddInstruction(HloInstruction::CreateParameter(3, value_shape, "rhs_value"));
+
+  auto comparison = builder.AddInstruction(HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0, param1, ComparisonDirection::kLt));
+
+  return module->AddEmbeddedComputation(builder.Build());
+}
+
 // High Level Algorithm.
 //
 // 1. Canonicalize the scatter_indices tensor such that it has rank 2, where
@@ -439,50 +493,93 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
         scatter->ToString());
   }
 
-  // Canonicalize the scatter_indices, after which the size of its most-major
-  // dimension must be same as the while loop trip count.
-  TF_ASSIGN_OR_RETURN(HloInstruction * canonical_scatter_indices,
-                      CanonicalizeScatterIndices(
-                          scatter_indices, dim_numbers.index_vector_dim()));
-  CHECK_EQ(scatter_loop_trip_count,
-           canonical_scatter_indices->shape().dimensions(0));
+  // Sort the scatter indices and updates together based on the scatter indices.
+  VLOG(2) << "Sorting scatter indices and updates.";
+  auto* parent = scatter->parent();
+  auto* module = scatter->GetModule();
+  // Assume scatter_indices is defined and is an HloInstruction pointer
+  const Shape& indices_shape = scatter_indices->shape();
+  
+  VLOG(2) << "Scatter indices shape: " << indices_shape.ToString();
+  // Get the dimensionality of a single index tuple
+  // This assumes that each index is a tuple specifying a position in scatter_operands
+  int last_dimension = indices_shape.dimensions_size() - 1;
+  int index_tuple_size = indices_shape.dimensions(last_dimension);
 
-  // Canonicalize the updates, after which the size of its most-major dimension
-  // must be same as the while loop trip count.
-  std::vector<HloInstruction*> adjusted_canonical_updates;
-  adjusted_canonical_updates.reserve(scatter_updates.size());
-  for (HloInstruction* update : scatter_updates) {
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * canonical_update,
-        PermuteScatterAndWindowDims(update, dim_numbers.update_window_dims()));
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * adjusted_canonical_update,
-        AdjustScatterDims(scatter_indices->shape(), canonical_update,
-                          dim_numbers.index_vector_dim()));
-    CHECK_EQ(scatter_loop_trip_count,
-             adjusted_canonical_update->shape().dimensions(0));
-    adjusted_canonical_updates.push_back(adjusted_canonical_update);
-  }
+  // Create the shape for a single index tuple
+  Shape index_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {indices_shape.dimensions(0)});
+  scatter_indices = parent->AddInstruction(
+    HloInstruction::CreateReshape(index_shape, scatter_indices));
 
-  // The while loop that implements the scatter operation.
-  std::vector<HloInstruction*> loop_state;
-  loop_state.reserve(scatter->operand_count());
-  absl::c_copy(scatter_operands, std::back_inserter(loop_state));
-  loop_state.push_back(canonical_scatter_indices);
-  absl::c_copy(adjusted_canonical_updates, std::back_inserter(loop_state));
-  absl::StatusOr<std::vector<HloInstruction*>> scatter_loop_result_status =
-      WhileUtil::MakeCountedLoop(
-          scatter->parent(), scatter_loop_trip_count, loop_state,
-          [scatter](HloInstruction* induction_var,
-                    const std::vector<HloInstruction*>& loop_state) {
-            return ScatterLoopBody(scatter, induction_var, loop_state);
-          },
-          scatter->metadata());
-  TF_ASSIGN_OR_RETURN(std::vector<HloInstruction*> scatter_loop_result,
-                      scatter_loop_result_status);
-  auto results =
-      absl::MakeSpan(scatter_loop_result).first(scatter_operands.size());
-  return MaybeMakeTuple(results);
+  auto* comparison= SortingComparison(module, index_shape.element_type(), scatter_updates[0]->shape().element_type());
+  VLOG(2) << "Sorting computation created.";
+  int64_t sort_dimension = 0;
+
+  auto* scatter_update = scatter_updates[0];
+  // operands.insert(operands.end(), scatter_updates.begin(), scatter_updates.end());
+  std::vector<HloInstruction*> operands = {scatter_indices, scatter_update};
+
+  VLOG(2) << "Creating sort instruction.";
+  auto* sorting = parent->AddInstruction(
+    HloInstruction::CreateSort(ShapeUtil::MakeTupleShape({scatter_indices->shape(), scatter_update->shape()}), sort_dimension, operands, comparison, false));
+  auto* sorted_indices = parent->AddInstruction(
+    HloInstruction::CreateGetTupleElement(scatter_indices->shape(), sorting, 0));
+  auto* sorted_updates = parent->AddInstruction(
+    HloInstruction::CreateGetTupleElement(scatter_update->shape(), sorting, 1));
+  VLOG(2) << "Sort instruction created.";
+  // Compute the scan
+  auto* prefix_scan_updates = CreateScan(parent, sorted_updates);
+  VLOG(2) << "Scan computation created.";
+
+
+
+  return prefix_scan_updates;
+
+
+  // // Canonicalize the scatter_indices, after which the size of its most-major
+  // // dimension must be same as the while loop trip count.
+  // TF_ASSIGN_OR_RETURN(HloInstruction * canonical_scatter_indices,
+  //                     CanonicalizeScatterIndices(
+  //                         scatter_indices, dim_numbers.index_vector_dim()));
+  // CHECK_EQ(scatter_loop_trip_count,
+  //          canonical_scatter_indices->shape().dimensions(0));
+
+  // // Canonicalize the updates, after which the size of its most-major dimension
+  // // must be same as the while loop trip count.
+  // std::vector<HloInstruction*> adjusted_canonical_updates;
+  // adjusted_canonical_updates.reserve(scatter_updates.size());
+  // for (HloInstruction* update : scatter_updates) {
+  //   TF_ASSIGN_OR_RETURN(
+  //       HloInstruction * canonical_update,
+  //       PermuteScatterAndWindowDims(update, dim_numbers.update_window_dims()));
+  //   TF_ASSIGN_OR_RETURN(
+  //       HloInstruction * adjusted_canonical_update,
+  //       AdjustScatterDims(scatter_indices->shape(), canonical_update,
+  //                         dim_numbers.index_vector_dim()));
+  //   CHECK_EQ(scatter_loop_trip_count,
+  //            adjusted_canonical_update->shape().dimensions(0));
+  //   adjusted_canonical_updates.push_back(adjusted_canonical_update);
+  // }
+
+  // // The while loop that implements the scatter operation.
+  // std::vector<HloInstruction*> loop_state;
+  // loop_state.reserve(scatter->operand_count());
+  // absl::c_copy(scatter_operands, std::back_inserter(loop_state));
+  // loop_state.push_back(canonical_scatter_indices);
+  // absl::c_copy(adjusted_canonical_updates, std::back_inserter(loop_state));
+  // StatusOr<std::vector<HloInstruction*>> scatter_loop_result_status =
+  //     WhileUtil::MakeCountedLoop(
+  //         scatter->parent(), scatter_loop_trip_count, loop_state,
+  //         [scatter](HloInstruction* induction_var,
+  //                   const std::vector<HloInstruction*>& loop_state) {
+  //           return ScatterLoopBody(scatter, induction_var, loop_state);
+  //         },
+  //         scatter->metadata());
+  // TF_ASSIGN_OR_RETURN(std::vector<HloInstruction*> scatter_loop_result,
+  //                     scatter_loop_result_status);
+  // auto results =
+  //     absl::MakeSpan(scatter_loop_result).first(scatter_operands.size());
+  // return MaybeMakeTuple(results);
 }
 
 namespace {
