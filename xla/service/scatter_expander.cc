@@ -422,7 +422,7 @@ HloInstruction* CreateScan(HloComputation* parent, HloInstruction* updates){
     auto* shifted_array = parent->AddInstruction(
         HloInstruction::CreateSlice(shifted_array_shape, prev_array, start_indices, end_indices, strides));
     auto* padding_array = parent->AddInstruction(
-        HloInstruction::CreateSlice(padding_array_shape, prev_array, start_indices, {offset}, strides));
+        HloInstruction::CreateBroadcast(padding_array_shape, parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0(updates_shape.element_type(), 0))), {}));
 
     auto* concatenated_array = parent->AddInstruction(
         HloInstruction::CreateConcatenate(updates_shape, {padding_array, shifted_array}, 0));
@@ -547,8 +547,7 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
     HloInstruction::CreateConcatenate(ShapeUtil::MakeShape(PRED, {indices_len}), padding_operands, 0));
 
   // Mask the indices
-  int scatter_len = indices_shape.dimensions(0);
-  auto* output_len_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(scatter_len)));
+  auto* output_len_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(indices_shape.dimensions(0))));
   auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(index_shape, output_len_constant, {}));
   auto* masked_indices = parent->AddInstruction(
     HloInstruction::CreateTernary(index_shape, HloOpcode::kSelect, indices_mask, sorted_indices, out_of_bound_tensor));
@@ -557,9 +556,6 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
   // TODO(chenhao): need to figure out how to handle multiple operands 
   auto* new_scatter = parent->AddInstruction(
     HloInstruction::CreateScatter(scatter->shape(), scatter_operands[0], masked_indices, prefix_scan_updates, scatter->to_apply(), scatter->scatter_dimension_numbers(), true/*indices_are_sorted*/, true/*unique_indices*/));
-
-  masked_indices = parent->AddInstruction(
-    HloInstruction::CreateConvert(scatter->shape(), masked_indices));
   
   return new_scatter;
 
