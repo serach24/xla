@@ -604,7 +604,7 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
     HloInstruction::CreateConcatenate(ShapeUtil::MakeShape(PRED, {indices_len}), padding_operands, 0));
 
   // Mask the indices
-  auto* output_len_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(indices_shape.dimensions(0))));
+  auto* output_len_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(scatter->shape().dimensions(0))));
   auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(index_shape, output_len_constant, {}));
   auto* masked_indices = parent->AddInstruction(
     HloInstruction::CreateTernary(index_shape, HloOpcode::kSelect, indices_mask, sorted_indices, out_of_bound_tensor));
