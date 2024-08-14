@@ -407,7 +407,7 @@ HloInstruction* CreateScan(HloComputation* parent, HloInstruction* updates){
   // Placeholder for offset calculation (2^d)
   int64_t offset;
 
-  // start to traverse
+  // Start to traverse
   auto* prev_array = updates;
   HloInstruction* new_array = nullptr;
   for (int64_t d = 0; d < log_n; ++d){
@@ -442,7 +442,7 @@ HloComputation* SortingComparison(HloModule* module, const PrimitiveType indices
   builder.AddInstruction(HloInstruction::CreateParameter(2, value_shape, "lhs_value"));
   builder.AddInstruction(HloInstruction::CreateParameter(3, value_shape, "rhs_value"));
 
-  auto comparison = builder.AddInstruction(HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0, param1, ComparisonDirection::kLt));
+  builder.AddInstruction(HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0, param1, ComparisonDirection::kLt));
 
   return module->AddEmbeddedComputation(builder.Build());
 }
@@ -531,9 +531,37 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
   auto* prefix_scan_updates = CreateScan(parent, sorted_updates);
   VLOG(2) << "Scan computation created.";
 
+  // Compute which unique indices to write
+  int64_t indices_len = sorted_indices->shape().dimensions(0);
+  auto* sorted_indices_preceding_part = parent->AddInstruction(
+    HloInstruction::CreateSlice(ShapeUtil::MakeShape(index_shape.element_type(), {indices_len-1}), sorted_indices, {0}, {indices_len-1}, {1}));
+  auto* sorted_indices_following_part = parent->AddInstruction(
+    HloInstruction::CreateSlice(ShapeUtil::MakeShape(index_shape.element_type(), {indices_len-1}), sorted_indices, {1}, {indices_len}, {1}));
+  auto* indices_mask_without_padding = parent->AddInstruction(
+    HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {indices_len-1}), sorted_indices_preceding_part, sorted_indices_following_part, ComparisonDirection::kNe));
+  // Pad the comparison with a true value at the end
+  auto* true_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<bool>(true)));
+  auto* padding = parent->AddInstruction(HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(PRED, {1}), true_constant, {})); 
+  std::vector<HloInstruction *> padding_operands = {indices_mask_without_padding, padding};
+  auto* indices_mask = parent->AddInstruction(
+    HloInstruction::CreateConcatenate(ShapeUtil::MakeShape(PRED, {indices_len}), padding_operands, 0));
 
+  // Mask the indices
+  int scatter_len = indices_shape.dimensions(0);
+  auto* output_len_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(scatter_len)));
+  auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(index_shape, output_len_constant, {}));
+  auto* masked_indices = parent->AddInstruction(
+    HloInstruction::CreateTernary(index_shape, HloOpcode::kSelect, indices_mask, sorted_indices, out_of_bound_tensor));
 
-  return prefix_scan_updates;
+  // Finally, recreate the scatter instruction with unique indices
+  // TODO(chenhao): need to figure out how to handle multiple operands 
+  auto* new_scatter = parent->AddInstruction(
+    HloInstruction::CreateScatter(scatter->shape(), scatter_operands[0], masked_indices, prefix_scan_updates, scatter->to_apply(), scatter->scatter_dimension_numbers(), true/*indices_are_sorted*/, true/*unique_indices*/));
+
+  masked_indices = parent->AddInstruction(
+    HloInstruction::CreateConvert(scatter->shape(), masked_indices));
+  
+  return new_scatter;
 
 
   // // Canonicalize the scatter_indices, after which the size of its most-major
