@@ -8,6 +8,7 @@ import csv
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--det", action="store_true")
+parser.add_argument("--jax-scan", action="store_true")
 args = parser.parse_args()
 
 if args.det:
@@ -36,16 +37,40 @@ def scatter_add(
     )
     return res
 
-def benchmark_scatter(data, indices, updates, repeat=5):
+@jax.jit
+def scatter_add_jax_associative_scan(
+    operand,  # [operand_size]
+    indices,  # [updates_size, 1]
+    updates,  # [updates_size]
+):
+    def add_segment(iv, jt):
+        i, v = iv
+        j, t = jt
+        return j, v * jnp.equal(i, j) + t
+
+    indices = jnp.reshape(indices, updates.shape)
+    indices, sorted = jax.lax.sort_key_val(indices, updates, dimension=-1)
+    
+    _, sums = jax.lax.associative_scan(add_segment, (indices, sorted))
+    end_of_run = jnp.concatenate([jnp.not_equal(indices[1:], indices[:-1]), jnp.array([True])])
+    indices = jnp.where(end_of_run, indices, operand.shape[-1])
+    return operand.at[indices].add(sums, mode='drop', unique_indices=True)
+
+def benchmark_scatter(data, indices, updates, args, repeat=5):
     # Perform a warm-up run to ensure the operation is JIT-compiled
+    if args.jax_scan:
+        op = scatter_add_jax_associative_scan
+    else:
+        op = scatter_add
     execution_time = 0
   
-    _ = scatter_add(data, indices, updates).block_until_ready()
+    _ = op(data, indices, updates).block_until_ready()
+    assert op ==scatter_add_jax_associative_scan
     
     # Start the timer after the warm-up
     for _ in range(repeat):
         start_time = time.perf_counter()
-        output = scatter_add(data, indices, updates).block_until_ready()
+        output = op(data, indices, updates).block_until_ready()
         end_time = time.perf_counter()
 
         execution_time += end_time - start_time
@@ -60,6 +85,8 @@ def main(args):
     else:
         print("Running with non-deterministic (reference) ops")
         exp_name = "non_det"
+    if args.jax_scan:
+        print("Running with JAX scan")
 
     sizes = [10, 100, 1000, 10000, 100000, 1_000_000]
     input_sizes = sizes
@@ -90,7 +117,7 @@ def main(args):
             assert updates.shape == (index_size,), f"Updates shape mismatch: expected ({index_size},)"
 
 
-            output, execution_time = benchmark_scatter(data, indices, updates)
+            output, execution_time = benchmark_scatter(data, indices, updates, args)
             timing_results[str(key)] = execution_time
             if args.det and str(key) in reference_data:
                 reference = jnp.array(reference_data[str(key)])
