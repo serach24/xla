@@ -2527,6 +2527,24 @@ cc_library(
     ],
 )
 
+
+cc_library(
+    name = "scatter_deterministic_expander",
+    srcs = ["scatter_deterministic_expander.cc"],
+    hdrs = ["scatter_deterministic_expander.h"],
+    deps = [
+        ":call_inliner",
+        ":hlo_creation_utils",
+        ":op_expander_pass",
+        ":while_util",
+        "//xla:literal_util",
+        "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+
 xla_cc_test(
     name = "scatter_expander_test",
     srcs = ["scatter_expander_test.cc"],

@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/service/scatter_expander.h"
+#include "xla/service/scatter_deterministic_expander.h"
 
 #include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
@@ -393,31 +393,130 @@ static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
   return scatter_loop_trip_count;
 }
 
-// High Level Algorithm.
-//
-// 1. Canonicalize the scatter_indices tensor such that it has rank 2, where
-//    each row is an index into the operand.
-// 2. Canonicalize the updates tensor such that is has rank `num_window_dims+1`
-//    and the scatter dim is the most-major dimension.
-// 3. Iterate over the set of indices in the canonicalized scatter_indices
-//    tensor using a while loop, updating the operand for each such index. Each
-//    iteration of this while loop performs the following:
-//      a. Pick the index from scatter_indices for this iteration.
-//      b. Transfrom this index into an index into the operand space.
-//      c. Extract the slice to be used to update from the updates tensor.
-//      d. Extract the slice to update from the operand tensor.
-//      e. Compute the new value for the slice to update by combining the slices
-//         from c. and d. using the update_computation of scatter.
-//      f. Write the updated value of the slice into the operand tensor.
+// This is work-inefficient version
+HloInstruction* CreateScan(HloComputation* parent, HloInstruction* updates){
+  // HloComputation::Builder builder("scan_computation");
 
-absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
+  auto updates_shape = updates->shape();
+  // Get the length of the input array
+  int64_t n = updates_shape.dimensions(0);
+
+  // Calculate the number of iterations needed (log_2(n))
+  int64_t log_n = static_cast<int64_t>(std::ceil(std::log2(n)));
+
+  // Placeholder for offset calculation (2^d)
+  int64_t offset;
+
+  // Start to traverse
+  auto* prev_array = updates;
+  HloInstruction* new_array = nullptr;
+  for (int64_t d = 0; d < log_n; ++d){
+    offset = 1 << d;
+    std::vector<int64_t> start_indices = {0};
+    std::vector<int64_t> end_indices = {n-offset};
+    std::vector<int64_t> strides = {1};
+    
+    auto shifted_array_shape = ShapeUtil::MakeShape(updates_shape.element_type(), {n-offset});
+    auto padding_array_shape = ShapeUtil::MakeShape(updates_shape.element_type(), {offset});
+
+    auto* shifted_array = parent->AddInstruction(
+        HloInstruction::CreateSlice(shifted_array_shape, prev_array, start_indices, end_indices, strides));
+    auto* padding_array = parent->AddInstruction(
+        HloInstruction::CreateBroadcast(padding_array_shape, parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0(updates_shape.element_type(), 0))), {}));
+
+    auto* concatenated_array = parent->AddInstruction(
+        HloInstruction::CreateConcatenate(updates_shape, {padding_array, shifted_array}, 0));
+    new_array = parent->AddInstruction(
+        HloInstruction::CreateBinary(updates_shape, HloOpcode::kAdd, prev_array, concatenated_array));
+    prev_array = new_array;
+  }
+  return new_array;
+}
+
+// This is work-inefficient version
+HloInstruction* CreateScanWithIndices(HloComputation* parent, HloInstruction* updates, HloInstruction* indices){
+  // TODO(chenhao) checkings, like make sure they are of the same length
+
+
+  auto updates_shape = updates->shape();
+  auto indices_shape = indices->shape();
+  // Get the length of the input array
+  int64_t n = updates_shape.dimensions(0);
+
+  // Calculate the number of iterations needed (log_2(n))
+  int64_t log_n = static_cast<int64_t>(std::ceil(std::log2(n)));
+
+  // Placeholder for offset calculation (2^d)
+  int64_t offset;
+
+  // Start to traverse
+  auto* prev_updates = updates;
+  auto* prev_indices = indices;
+  HloInstruction* new_updates = nullptr;
+
+  std::vector<int64_t> start_indices = {0};
+  std::vector<int64_t> strides = {1};
+
+  for (int64_t d = 0; d < log_n; ++d){
+    offset = 1 << d;
+    std::vector<int64_t> end_indices = {n-offset};
+    
+    auto shifted_updates_shape = ShapeUtil::MakeShape(updates_shape.element_type(), {n-offset});
+    auto padding_updates_shape = ShapeUtil::MakeShape(updates_shape.element_type(), {offset});
+ 
+    auto shifted_indices_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {n-offset});
+    auto padding_indices_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {offset});
+
+
+    auto* shifted_updates = parent->AddInstruction(
+        HloInstruction::CreateSlice(shifted_updates_shape, prev_updates, start_indices, end_indices, strides));
+    auto* padding_updates = parent->AddInstruction(
+        HloInstruction::CreateBroadcast(padding_updates_shape, parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0(updates_shape.element_type(), 0))), {}));
+
+    auto* shifted_indices = parent->AddInstruction(
+        HloInstruction::CreateSlice(shifted_indices_shape, prev_indices, start_indices, end_indices, strides));
+    auto* padding_indices = parent->AddInstruction(
+        HloInstruction::CreateBroadcast(padding_indices_shape, parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0(indices_shape.element_type(), 0))), {}));
+
+    auto* concatenated_updates = parent->AddInstruction(
+        HloInstruction::CreateConcatenate(updates_shape, {padding_updates, shifted_updates}, 0));
+    auto* concatenated_indices = parent->AddInstruction(
+        HloInstruction::CreateConcatenate(indices_shape, {padding_indices, shifted_indices}, 0));
+    
+    auto* indices_mask = parent->AddInstruction(
+        HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {n}), prev_indices, concatenated_indices, ComparisonDirection::kEq));
+    auto* summed_updates = parent->AddInstruction(
+        HloInstruction::CreateBinary(updates_shape, HloOpcode::kAdd, prev_updates, concatenated_updates));
+    new_updates = parent->AddInstruction(
+        HloInstruction::CreateTernary(updates_shape, HloOpcode::kSelect, indices_mask, summed_updates, prev_updates));
+    prev_updates = new_updates;
+  }
+  return new_updates;
+}
+
+
+HloComputation* SortingComparison(HloModule* module, const PrimitiveType indices_type, const PrimitiveType values_type){
+  HloComputation::Builder builder("sorting_computation");
+  auto key_shape = ShapeUtil::MakeShape(indices_type, {});
+  auto value_shape = ShapeUtil::MakeShape(values_type, {});
+  auto param0 = builder.AddInstruction(HloInstruction::CreateParameter(0, key_shape, "lhs_key"));
+  auto param1 = builder.AddInstruction(HloInstruction::CreateParameter(1, key_shape, "rhs_key"));
+  builder.AddInstruction(HloInstruction::CreateParameter(2, value_shape, "lhs_value"));
+  builder.AddInstruction(HloInstruction::CreateParameter(3, value_shape, "rhs_value"));
+
+  builder.AddInstruction(HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0, param1, ComparisonDirection::kLt));
+
+  return module->AddEmbeddedComputation(builder.Build());
+}
+
+absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
     HloInstruction* inst) {
   auto* scatter = Cast<HloScatterInstruction>(inst);
   auto scatter_operands = scatter->scatter_operands();
   HloInstruction* scatter_indices = scatter->scatter_indices();
   auto scatter_updates = scatter->scatter_updates();
-  const ScatterDimensionNumbers& dim_numbers =
-      scatter->scatter_dimension_numbers();
+  // const ScatterDimensionNumbers& dim_numbers =
+  //     scatter->scatter_dimension_numbers();
 
   // If the updates tensors are empty, there is no need to update the operands.
   // The operands can be forwarded.
@@ -448,52 +547,57 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
   // Get the dimensionality of a single index tuple
   // This assumes that each index is a tuple specifying a position in scatter_operands
   int last_dimension = indices_shape.dimensions_size() - 1;
-  int index_tuple_size = indices_shape.dimensions(last_dimension);
+  // int index_tuple_size = indices_shape.dimensions(last_dimension);
 
-  // Canonicalize the scatter_indices, after which the size of its most-major
-  // dimension must be same as the while loop trip count.
-  TF_ASSIGN_OR_RETURN(HloInstruction * canonical_scatter_indices,
-                      CanonicalizeScatterIndices(
-                          scatter_indices, dim_numbers.index_vector_dim()));
-  CHECK_EQ(scatter_loop_trip_count,
-           canonical_scatter_indices->shape().dimensions(0));
+  // Create the shape for a single index tuple
+  Shape index_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {indices_shape.dimensions(0)});
+  scatter_indices = parent->AddInstruction(
+    HloInstruction::CreateReshape(index_shape, scatter_indices));
 
-  // Canonicalize the updates, after which the size of its most-major dimension
-  // must be same as the while loop trip count.
-  std::vector<HloInstruction*> adjusted_canonical_updates;
-  adjusted_canonical_updates.reserve(scatter_updates.size());
-  for (HloInstruction* update : scatter_updates) {
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * canonical_update,
-        PermuteScatterAndWindowDims(update, dim_numbers.update_window_dims()));
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * adjusted_canonical_update,
-        AdjustScatterDims(scatter_indices->shape(), canonical_update,
-                          dim_numbers.index_vector_dim()));
-    CHECK_EQ(scatter_loop_trip_count,
-             adjusted_canonical_update->shape().dimensions(0));
-    adjusted_canonical_updates.push_back(adjusted_canonical_update);
-  }
+  auto* comparison= SortingComparison(module, index_shape.element_type(), scatter_updates[0]->shape().element_type());
+  int64_t sort_dimension = 0;
 
-  // The while loop that implements the scatter operation.
-  std::vector<HloInstruction*> loop_state;
-  loop_state.reserve(scatter->operand_count());
-  absl::c_copy(scatter_operands, std::back_inserter(loop_state));
-  loop_state.push_back(canonical_scatter_indices);
-  absl::c_copy(adjusted_canonical_updates, std::back_inserter(loop_state));
-  StatusOr<std::vector<HloInstruction*>> scatter_loop_result_status =
-      WhileUtil::MakeCountedLoop(
-          scatter->parent(), scatter_loop_trip_count, loop_state,
-          [scatter](HloInstruction* induction_var,
-                    const std::vector<HloInstruction*>& loop_state) {
-            return ScatterLoopBody(scatter, induction_var, loop_state);
-          },
-          scatter->metadata());
-  TF_ASSIGN_OR_RETURN(std::vector<HloInstruction*> scatter_loop_result,
-                      scatter_loop_result_status);
-  auto results =
-      absl::MakeSpan(scatter_loop_result).first(scatter_operands.size());
-  return MaybeMakeTuple(results);
+  auto* scatter_update = scatter_updates[0];
+  // operands.insert(operands.end(), scatter_updates.begin(), scatter_updates.end());
+  std::vector<HloInstruction*> operands = {scatter_indices, scatter_update};
+
+  auto* sorting = parent->AddInstruction(
+    HloInstruction::CreateSort(ShapeUtil::MakeTupleShape({scatter_indices->shape(), scatter_update->shape()}), sort_dimension, operands, comparison, false));
+  auto* sorted_indices = parent->AddInstruction(
+    HloInstruction::CreateGetTupleElement(scatter_indices->shape(), sorting, 0));
+  auto* sorted_updates = parent->AddInstruction(
+    HloInstruction::CreateGetTupleElement(scatter_update->shape(), sorting, 1));
+  // Compute the scan
+  // auto* prefix_scan_updates = CreateScan(parent, sorted_updates);
+  auto* prefix_scan_updates = CreateScanWithIndices(parent, sorted_updates, sorted_indices);
+
+  // Compute which unique indices to write
+  int64_t indices_len = sorted_indices->shape().dimensions(0);
+  auto* sorted_indices_preceding_part = parent->AddInstruction(
+    HloInstruction::CreateSlice(ShapeUtil::MakeShape(index_shape.element_type(), {indices_len-1}), sorted_indices, {0}, {indices_len-1}, {1}));
+  auto* sorted_indices_following_part = parent->AddInstruction(
+    HloInstruction::CreateSlice(ShapeUtil::MakeShape(index_shape.element_type(), {indices_len-1}), sorted_indices, {1}, {indices_len}, {1}));
+  auto* indices_mask_without_padding = parent->AddInstruction(
+    HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {indices_len-1}), sorted_indices_preceding_part, sorted_indices_following_part, ComparisonDirection::kNe));
+  // Pad the comparison with a true value at the end
+  auto* true_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<bool>(true)));
+  auto* padding = parent->AddInstruction(HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(PRED, {1}), true_constant, {})); 
+  std::vector<HloInstruction *> padding_operands = {indices_mask_without_padding, padding};
+  auto* indices_mask = parent->AddInstruction(
+    HloInstruction::CreateConcatenate(ShapeUtil::MakeShape(PRED, {indices_len}), padding_operands, 0));
+
+  // Mask the indices
+  auto* output_len_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(scatter->shape().dimensions(0))));
+  auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(index_shape, output_len_constant, {}));
+  auto* masked_indices = parent->AddInstruction(
+    HloInstruction::CreateTernary(index_shape, HloOpcode::kSelect, indices_mask, sorted_indices, out_of_bound_tensor));
+
+  // Finally, recreate the scatter instruction with unique indices
+  // TODO(chenhao): need to figure out how to handle multiple operands 
+  auto* new_scatter = parent->AddInstruction(
+    HloInstruction::CreateScatter(scatter->shape(), scatter_operands[0], masked_indices, prefix_scan_updates, scatter->to_apply(), scatter->scatter_dimension_numbers(), true/*indices_are_sorted*/, true/*unique_indices*/));
+  
+  return new_scatter;
 }
 
 namespace {
@@ -531,11 +635,9 @@ bool IsDeterministic(const HloScatterInstruction* scatter) {
 
 }  // namespace
 
-bool ScatterExpander::InstructionMatchesPattern(HloInstruction* inst) {
+bool ScatterDeterministicExpander::InstructionMatchesPattern(HloInstruction* inst) {
   auto* scatter = DynCast<HloScatterInstruction>(inst);
-  return (scatter != nullptr) && (mode_ == kEliminateAllScatters ||
-                                  (mode_ == kEliminateSimpleScatters &&
-                                   ScatterTripCount(scatter) == 1));
+  return (scatter != nullptr) && !IsDeterministic(scatter);
 }
 
 }  // namespace xla
