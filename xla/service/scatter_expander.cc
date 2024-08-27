@@ -439,18 +439,7 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
         scatter->ToString());
   }
 
-  // Sort the scatter indices and updates together based on the scatter indices.
-  auto* parent = scatter->parent();
-  auto* module = scatter->GetModule();
-  // Assume scatter_indices is defined and is an HloInstruction pointer
-  const Shape& indices_shape = scatter_indices->shape();
-  
-  // Get the dimensionality of a single index tuple
-  // This assumes that each index is a tuple specifying a position in scatter_operands
-  int last_dimension = indices_shape.dimensions_size() - 1;
-  int index_tuple_size = indices_shape.dimensions(last_dimension);
-
-  // Canonicalize the scatter_indices, after which the size of its most-major
+   // Canonicalize the scatter_indices, after which the size of its most-major
   // dimension must be same as the while loop trip count.
   TF_ASSIGN_OR_RETURN(HloInstruction * canonical_scatter_indices,
                       CanonicalizeScatterIndices(

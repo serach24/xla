@@ -494,6 +494,38 @@ HloInstruction* CreateScanWithIndices(HloComputation* parent, HloInstruction* up
   return new_updates;
 }
 
+HloInstruction* ExpandIndexOffsetsFromUpdateShape(const Shape& update_shape, const ScatterDimensionNumbers& dim_num, HloComputationBuilder* builder){
+  // Calculate the offset tensor for each element of the update tensor.
+  // The offset tensor is represented in (num_elements_in_update, index_dim).
+
+  // Calculate the total number of elements in the update tensor
+  int64_t num_elements = ShapeUtil::ElementsIn(update_shape);
+
+  // Iterate over every element in the update tensor
+  std::vector<std::vector<int>> offset_tensor;
+  int index_vector_dim = dim_num.index_vector_dim();
+  for (int64_t linear_index = 0; linear_index < num_elements; ++linear_index) {
+    // Calculate the multi-dimensional index from the linear index
+    std::vector<int> multi_dim_index(index_vector_dim);
+    int64_t current_index = linear_index;
+
+    for (int i = index_vector_dim - 1; i >= 0; --i) {
+      if (std::find(dim_num.inserted_window_dims().begin(), 
+                   dim_num.inserted_window_dims().end(), i) != dim_num.inserted_window_dims().end()) {
+        // This dimension does not correspond to the update tensor, so it should remain unchanged
+        multi_dim_index[i] = 0;
+        continue;
+      }
+      int dim_size = update_shape.dimensions(i);
+      multi_dim_index[i] = current_index % dim_size;
+      current_index /= dim_size;
+    }
+    offset_tensor.push_back(multi_dim_index);
+  }
+
+  // Return the offset tensor as an HloInstruction
+  return builder->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR2<int>(offset_tensor)));
+}
 
 HloComputation* SortingComparison(HloModule* module, const PrimitiveType indices_type, const PrimitiveType values_type){
   HloComputation::Builder builder("sorting_computation");
@@ -515,8 +547,10 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   auto scatter_operands = scatter->scatter_operands();
   HloInstruction* scatter_indices = scatter->scatter_indices();
   auto scatter_updates = scatter->scatter_updates();
-  // const ScatterDimensionNumbers& dim_numbers =
-  //     scatter->scatter_dimension_numbers();
+  const ScatterDimensionNumbers& dim_numbers =
+      scatter->scatter_dimension_numbers();
+
+  auto* index_offsets = ExpandIndexOffsetsFromUpdateShape(scatter_updates[0]->shape(), dim_numbers, scatter->parent());
 
   // If the updates tensors are empty, there is no need to update the operands.
   // The operands can be forwarded.
@@ -549,8 +583,15 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   int last_dimension = indices_shape.dimensions_size() - 1;
   // int index_tuple_size = indices_shape.dimensions(last_dimension);
 
+  // Extract operand dimensions
+  const Shape& operand_shape = scatter_operands[0]->shape();
+  auto operand_dims = operand_shape.dimensions();
+
+
+
+
   // Create the shape for a single index tuple
-  Shape index_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {indices_shape.dimensions(0)});
+  const Shape& index_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {indices_shape.dimensions(0)});
   scatter_indices = parent->AddInstruction(
     HloInstruction::CreateReshape(index_shape, scatter_indices));
 
