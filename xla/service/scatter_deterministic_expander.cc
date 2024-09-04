@@ -308,6 +308,40 @@ HloComputation* CheckIndexValidityWrapper(
   return module->AddEmbeddedComputation(std::move(computation));
 }
 
+// Assume the indices are in operand space already
+// indices shape: (num_indices, num_dims)
+// updates shape: (num_indices,)
+HloInstruction* FlattenIndices(HloComputation* parent, HloInstruction* indices, absl::Span<const int64_t> operand_dims) {
+  // Step 1: based on the operand_dims, calculate the strides
+  Array2D<int64_t> strides(operand_dims.size(), 1);
+  int64_t stride = 1;
+  for (int i = operand_dims.size() - 1; i >= 0; --i) {
+    // strides.push_back(stride);
+    strides(i, 0) = stride;
+    stride *= operand_dims[i];
+  }
+  auto strides_tensor = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR2FromArray2D<int64_t>(strides)));
+
+  // Step 2: calculate the flattened indices
+  auto dot_shape = ShapeUtil::MakeShape(indices->shape().element_type(), {indices->shape().dimensions(0)});
+  DotDimensionNumbers dim_numbers;
+  dim_numbers.add_lhs_contracting_dimensions(1);
+  dim_numbers.add_rhs_contracting_dimensions(0);
+  PrecisionConfig precision_config;
+  std::vector<SparsityDescriptor> sparsity;
+  absl::Span<HloInstruction* const> sparse_meta;
+  auto flattened_indices = parent->AddInstruction(HloInstruction::CreateDot(
+    dot_shape,
+    indices,
+    strides_tensor, 
+    dim_numbers,
+    precision_config,
+    sparsity,
+    sparse_meta));
+  // todo(chenhao): whether reshape here?
+  return flattened_indices;
+}
+
 static absl::StatusOr<HloComputation*> CallAndGetOutput(
     HloComputation* original, int output_index) {
   HloInstruction* original_root = original->root_instruction();
