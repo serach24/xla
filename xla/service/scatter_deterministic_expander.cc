@@ -27,6 +27,7 @@ limitations under the License.
 #include "xla/service/call_inliner.h"
 #include "xla/service/hlo_creation_utils.h"
 #include "xla/service/while_util.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 
@@ -172,68 +173,6 @@ static absl::StatusOr<HloInstruction*> ExpandIndexVectorIntoOperandSpace(
   return MakeConcatHlo(expanded_index_components, /*dimension=*/0);
 }
 
-
-// TODO(chenhao): should I use the expanded indices that I computed already for check index validity?
-// or should I use this?
-// check if the performance is worse in the former case first, and then consider reuse
-// HloComputation* CheckIndexValidity(
-//     HloModule* module, 
-//     absl::Span<const int64_t> operand_dims,
-//     absl::Span<const int64_t> window_sizes) {
-//   DCHECK_NE(nullptr, module);
-//   DCHECK_EQ(operand_dims.size(), window_sizes.size());
-
-//   // Valid range for the index: [0, operand_dims - window_sizes]
-
-//   HloComputation::Builder builder("check_out_of_bound_computation");
-//   auto index = builder.AddInstruction(HloInstruction::CreateParameter(0, index_shape, "base_index"));
-//   // broadcast to be the same shape as the index_offset
-//   auto broadcasted_index = builder.AddInstruction(HloInstruction::CreateBroadcast(index_offset->shape(), index, {}));
-//   // add the index_offset to the base index
-//   auto expanded_index = builder.AddInstruction(HloInstruction::CreateBinary(index_offset->shape(), HloOpcode::kAdd, broadcast_index, index_offset));
-
-
-//   // Check if the index has any negative values.
-//   // HloInstruction* zero_index = BroadcastZeros(
-//       // computation, index->shape().element_type(), index->shape().dimensions());
-//   // Implement a similar thing using builder
-//   auto zero_constant = builder.AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int64_t>(0)));
-//   auto zero_index = builder.AddInstruction(HloInstruction::CreateBroadcast(index->shape(), zero_constant, {}));
-  
-//   TF_ASSIGN_OR_RETURN(
-//       HloInstruction * negative_index_check,
-//       MakeCompareHlo(ComparisonDirection::kLe, zero_index, index));
-
-//   // Check if the index is OOB w.r.t. the operand dimensions and window sizes.
-//   std::vector<int64_t> max_valid_index(operand_dims.size());
-//   for (int i = 0; i < operand_dims.size(); ++i) {
-//     max_valid_index[i] = operand_dims[i] - window_sizes[i];
-//   }
-//   TF_ASSIGN_OR_RETURN(
-//       HloInstruction * max_valid_index_constant,
-//       MakeR1ConstantHlo<int64_t>(computation, index->shape().element_type(),
-//                                  max_valid_index));
-//   TF_ASSIGN_OR_RETURN(HloInstruction * oob_index_check,
-//                       MakeCompareHlo(ComparisonDirection::kGe,
-//                                      max_valid_index_constant, index));
-
-//   // Combine the results of the two checks above.
-//   TF_ASSIGN_OR_RETURN(
-//       HloInstruction * valid_index,
-//       MakeBinaryHlo(HloOpcode::kAnd, negative_index_check, oob_index_check));
-
-//   // Reduce the index validity check vector into a scalar predicate.
-//   auto reduction_init = computation->AddInstruction(
-//       HloInstruction::CreateConstant(LiteralUtil::CreateR0<bool>(true)));
-//   TF_ASSIGN_OR_RETURN(
-//       HloInstruction * valid_index_reduced,
-//       MakeReduceHlo(valid_index, reduction_init, HloOpcode::kAnd, module));
-
-//   // Return a broadcasted value of the scalar predicate to the same size as the
-//   // window.
-//   return MakeBroadcastHlo(valid_index_reduced, {}, window_sizes);
-// }
-
 static absl::StatusOr<HloInstruction*> CheckIndexValidity(
     HloComputation* computation, HloInstruction* index,
     absl::Span<const int64_t> operand_dims,
@@ -281,33 +220,6 @@ static absl::StatusOr<HloInstruction*> CheckIndexValidity(
   // return MakeBroadcastHlo(valid_index_reduced, {}, window_sizes);
 }
 
-HloComputation* CheckIndexValidityWrapper(
-    HloModule* module, 
-    absl::Span<const int64_t> operand_dims,
-    absl::Span<const int64_t> window_sizes,
-    const Shape& index_shape) {
-  HloComputation::Builder builder("check_out_of_bound_computation");
-  // TODO(chenhao): change shape here
-  auto index = builder.AddInstruction(HloInstruction::CreateParameter(0, index_shape, "base_index"));
-  // add a fake convert to set the type to be pred
-  auto index_reshaped = builder.AddInstruction(HloInstruction::CreateConvert(ShapeUtil::MakeShape(PRED, index_shape.dimensions()), index));
-
-  // // build the computation
-  auto computation = builder.Build();
-  // auto computation_raw_ptr = computation.release();
-
-  // // call the utility function to check the index validity
-  // // TF_ASSIGN_OR_RETURN(HloInstruction * valid_index_reduced,
-  // //     CheckIndexValidity(computation_raw_ptr, index, operand_dims, window_sizes, module));
-  // auto output = CheckIndexValidity(computation_raw_ptr, index, operand_dims, window_sizes, module).value();
-  // computation_raw_ptr->set_root_instruction(output);
-
-
-  // add the computation to the module
-  // return module->AddEmbeddedComputation(std::unique_ptr<HloComputation>(computation_raw_ptr));
-  return module->AddEmbeddedComputation(std::move(computation));
-}
-
 // Assume the indices are in operand space already
 // indices shape: (num_indices, num_dims)
 // updates shape: (num_indices,)
@@ -323,7 +235,7 @@ HloInstruction* FlattenIndices(HloComputation* parent, HloInstruction* indices, 
   auto strides_tensor = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR2FromArray2D<int64_t>(strides)));
 
   // Step 2: calculate the flattened indices
-  auto dot_shape = ShapeUtil::MakeShape(indices->shape().element_type(), {indices->shape().dimensions(0)});
+  auto dot_shape = ShapeUtil::MakeShape(indices->shape().element_type(), {indices->shape().dimensions(0), 1});
   DotDimensionNumbers dim_numbers;
   dim_numbers.add_lhs_contracting_dimensions(1);
   dim_numbers.add_rhs_contracting_dimensions(0);
@@ -338,8 +250,7 @@ HloInstruction* FlattenIndices(HloComputation* parent, HloInstruction* indices, 
     precision_config,
     sparsity,
     sparse_meta));
-  // todo(chenhao): whether reshape here?
-  return flattened_indices;
+  return parent->AddInstruction(HloInstruction::CreateReshape(ShapeUtil::MakeShape(indices->shape().element_type(), {indices->shape().dimensions(0)}), flattened_indices));
 }
 
 static absl::StatusOr<HloComputation*> CallAndGetOutput(
@@ -618,32 +529,39 @@ HloInstruction* CreateScanWithIndices(HloComputation* parent, HloInstruction* up
   return new_updates;
 }
 
-HloInstruction* ExpandIndexOffsetsFromUpdateShape(HloComputation* parent, const Shape& update_shape, const ScatterDimensionNumbers& dim_num){
+HloInstruction* ExpandIndexOffsetsFromUpdateShape(HloComputation* parent, const Shape& update_shape, const ScatterDimensionNumbers& dim_num, const Shape& operand_shape){
   // Calculate the offset tensor for each element of the update tensor.
   // The offset tensor is represented in (num_elements_in_update, index_dim).
 
   // Calculate the total number of elements in the update tensor
 
   int64_t num_elements = ShapeUtil::ElementsIn(update_shape);
+  int64_t operand_rank = operand_shape.dimensions_size();
+  Array2D<int> offset_tensor(num_elements, operand_rank);
 
-  // Iterate over every element in the update tensor
-  int index_vector_dim = dim_num.index_vector_dim();
-  Array2D<int> offset_tensor(num_elements, index_vector_dim);
   for (int64_t linear_index = 0; linear_index < num_elements; ++linear_index) {
     // Calculate the multi-dimensional index from the linear index
     int64_t current_index = linear_index;
-
-    for (int i = index_vector_dim - 1; i >= 0; --i) {
+    int inserted_window_dim_size = 0;
+    for (int i = 0 ; i < operand_rank - 1; ++i) {
       if (std::find(dim_num.inserted_window_dims().begin(), 
                    dim_num.inserted_window_dims().end(), i) != dim_num.inserted_window_dims().end()) {
-        // This dimension does not correspond to the update tensor, so it should remain unchanged
+        inserted_window_dim_size++;
         offset_tensor(linear_index, i) = 0;
       } else{
-        int dim_size = update_shape.dimensions(i);
-        offset_tensor(linear_index, i)= current_index % dim_size;
-        current_index /= dim_size;
+        // When computing the multi-dimensional index, we want to divide by the next dimension size, so we need to add 1. We
+        // also wants to skip the inserted window dims 
+        int dim_size = update_shape.dimensions(i+1-inserted_window_dim_size);
+        offset_tensor(linear_index, i)= current_index / dim_size;
+        current_index %= dim_size;
       }
-   }
+    }
+    if (std::find(dim_num.inserted_window_dims().begin(), 
+                   dim_num.inserted_window_dims().end(), operand_rank-1) != dim_num.inserted_window_dims().end()) {
+      offset_tensor(linear_index, operand_rank-1) = 0;
+    } else{
+      offset_tensor(linear_index, operand_rank-1) = current_index;
+    }
   }
 
   // Return the offset tensor as an HloInstruction
@@ -654,20 +572,22 @@ HloInstruction* ExpandIndexOffsetsFromUpdateShape(HloComputation* parent, const 
 // For each (index, update) pair, calculate the new indices 
 // TODO(maybe could reshape the indices before the map to avoid reshape for indices and mask)
 HloInstruction* ExpandIndices(HloComputation* parent, HloInstruction* indices, HloInstruction* index_offsets){
-  // The output should still be a 1D tensor and each element being a index
-  // The index_offset has the shape of updates, so we need to broadcast the indices to the same shape as the index_offset and add them
-  int64_t num_indices = ShapeUtil::ElementsIn(indices->shape());
-  int64_t num_offsets = ShapeUtil::ElementsIn(index_offsets->shape());
-  
-  auto final_shape = ShapeUtil::MakeShape(indices->shape().element_type(), {num_indices, num_offsets});
-  auto reshaped_indices = parent->AddInstruction(HloInstruction::CreateReshape(ShapeUtil::MakeShape(indices->shape().element_type(), {ShapeUtil::ElementsIn(indices->shape())}), indices));
-  auto reshaped_offsets = parent->AddInstruction(HloInstruction::CreateReshape(ShapeUtil::MakeShape(index_offsets->shape().element_type(), {ShapeUtil::ElementsIn(index_offsets->shape())}), index_offsets));
-
-  auto broadcasted_indices = parent->AddInstruction(HloInstruction::CreateBroadcast(final_shape, reshaped_indices, {0}));
-  auto broadcasted_offsets = parent->AddInstruction(HloInstruction::CreateBroadcast(final_shape, reshaped_offsets, {1}));
-  // add the index_offset to the base index
-  auto expanded_indices = parent->AddInstruction(HloInstruction::CreateBinary(final_shape, HloOpcode::kAdd, broadcasted_indices, broadcasted_offsets));
-  return expanded_indices;
+  // For each index we need to add the index_offset to the base index
+  // To do that, we first broadcast the indices and index_offsets to the same shape
+  // Then we add the index_offset to the base index and flatten the result
+  // Broadcast to be (num_indices, length_of_index_offsets, length_of_indices)
+  auto num_indices = indices->shape().dimensions(0);
+  auto num_offsets = index_offsets->shape().dimensions(0);
+  auto index_length = indices->shape().dimensions(1);
+  auto final_shape = ShapeUtil::MakeShape(indices->shape().element_type(), {num_indices, num_offsets, index_length});
+  auto broadcasted_indices = parent->AddInstruction(
+    HloInstruction::CreateBroadcast(final_shape, indices, {0, 2}));
+  auto broadcasted_offsets = parent->AddInstruction(
+    HloInstruction::CreateBroadcast(final_shape, index_offsets, {1, 2}));
+  auto expanded_indices = parent->AddInstruction(
+    HloInstruction::CreateBinary(final_shape, HloOpcode::kAdd, broadcasted_indices, broadcasted_offsets));
+  // Flatten the result to be (num_indices * num_offsets, index_length)
+  return parent->AddInstruction(HloInstruction::CreateReshape(ShapeUtil::MakeShape(indices->shape().element_type(), {num_indices * num_offsets, index_length}), expanded_indices));
 }
 
 // For each (index, update) pair, calculate the new updates
@@ -694,37 +614,43 @@ HloInstruction* ExpandMask(HloComputation* parent, HloInstruction* mask, const S
   return expanded_mask;
 }
 
-
-// Map function that check if the expanded_index of current (index, update) is out of bound  
-// output a boolean mask of the same length as the update
-// HloComputation* CheckAnyUpdateOutOfBound(HloModule* parent, const Shape& index_shape, HloInstruction* index_offset){
-//   // Take the base index of the update, calculate the expanded_index for each value based on index_offset and see if it is out of bound 
-//   // This is an HloComputation to be used in a Map operation, and it takes one index as the input
-//   HloComputation::Builder builder("check_out_of_bound_computation");
-//   auto index = builder.AddInstruction(HloInstruction::CreateParameter(0, index_shape, "base_index"));
-//   // broadcast to be the same shape as the index_offset
-//   auto broadcasted_index = builder.AddInstruction(HloInstruction::CreateBroadcast(index_offset->shape(), index, {}));
-//   // add the index_offset to the base index
-//   auto expanded_index = builder.AddInstruction(HloInstruction::CreateBinary(index_offset->shape(), HloOpcode::kAdd, broadcast_index, index_offset));
-// }
-
-
-// TODO(chenhao) add multi-dim support
-HloComputation* SortingComparison(HloModule* module, const PrimitiveType indices_type, const PrimitiveType values_type){
+HloComputation* SortingComparison(HloModule* module, const Shape key_shape, const Shape update_shape){
   HloComputation::Builder builder("sorting_computation");
-  auto key_shape = ShapeUtil::MakeShape(indices_type, {});
-  auto value_shape = ShapeUtil::MakeShape(values_type, {});
   auto param0 = builder.AddInstruction(HloInstruction::CreateParameter(0, key_shape, "lhs_key"));
   auto param1 = builder.AddInstruction(HloInstruction::CreateParameter(1, key_shape, "rhs_key"));
-  builder.AddInstruction(HloInstruction::CreateParameter(2, value_shape, "lhs_value"));
-  builder.AddInstruction(HloInstruction::CreateParameter(3, value_shape, "rhs_value"));
-
+  builder.AddInstruction(HloInstruction::CreateParameter(2, key_shape, "lhs_indices"));
+  builder.AddInstruction(HloInstruction::CreateParameter(3, key_shape, "rhs_indices"));
+  builder.AddInstruction(HloInstruction::CreateParameter(4, update_shape, "lhs_updates"));
+  builder.AddInstruction(HloInstruction::CreateParameter(5, update_shape, "rhs_updates"));
   builder.AddInstruction(HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0, param1, ComparisonDirection::kLt));
 
   return module->AddEmbeddedComputation(builder.Build());
 }
 
-HloInstruction* CheckValidIndices(HloComputation *parent,
+// Function to create a reduction computation for logical AND
+HloComputation* ReduceAndComputation(HloModule* module) {
+    // Create a computation builder
+    HloComputation::Builder builder("reduce_logical_and");
+
+    // Define the scalar shape for boolean operations
+    const Shape bool_shape = ShapeUtil::MakeShape(PRED, {});
+
+    // Add parameters for the reduction computation. 
+    // These represent the elements to be combined (lhs and rhs).
+    HloInstruction* lhs = builder.AddInstruction(
+        HloInstruction::CreateParameter(0, bool_shape, "lhs"));
+    HloInstruction* rhs = builder.AddInstruction(
+        HloInstruction::CreateParameter(1, bool_shape, "rhs"));
+
+    // Create the logical AND operation between the two parameters
+    builder.AddInstruction(
+        HloInstruction::CreateBinary(bool_shape, HloOpcode::kAnd, lhs, rhs));
+
+    // Build and return the computation object
+    return module->AddEmbeddedComputation(builder.Build());
+}
+
+StatusOr<HloInstruction*> CheckValidIndices(HloComputation *parent,
     HloInstruction* indices,
     absl::Span<const int64_t> operand_dims,
     absl::Span<const int64_t> window_sizes){
@@ -733,18 +659,22 @@ HloInstruction* CheckValidIndices(HloComputation *parent,
     // 1. Check base indices >= [0, 0, 0, ...]
     // 2. Check last indices <= [bounds...]
     // 3. For each check, generate a same size tensor, and then do a reduce across rows to get a mask of size (n, 1)
+    auto init_reduce_value = parent->AddInstruction(
+    HloInstruction::CreateConstant(LiteralUtil::CreateR0<bool>(true)));
+    auto reduce_computation = ReduceAndComputation(parent->parent());
 
     // 1. Check base indices >= [0, 0, 0, ...]
     // first generate a zero tensor of the same size as the indices
     auto* zero_constant = parent->AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int64_t>(0)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
     auto* zero_broadcasted = parent->AddInstruction(
-      HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(indices->shape(), zero_constant, {})));
+      HloInstruction::CreateBroadcast(indices->shape(), zero_constant, {}));
     auto* zero_check = parent->AddInstruction(
       HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, indices->shape().dimensions()), indices, zero_broadcasted, ComparisonDirection::kGe));
     // reduce each row to get a mask
     auto* zero_check_mask = parent->AddInstruction(
-      HloInstruction::CreateReduce(ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), zero_check, {1}, HloOpcode::kAnd));
+      HloInstruction::CreateReduce(ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), zero_check, init_reduce_value, {1}, reduce_computation));
+
     
     // 2. Check last indices <= [bounds...]
     // Check if the index is OOB w.r.t. the operand dimensions and window sizes.
@@ -753,20 +683,23 @@ HloInstruction* CheckValidIndices(HloComputation *parent,
       max_valid_index[i] = operand_dims[i] - window_sizes[i];
     }
 
-    Literal max_valid_index_literal = LiteralUtil::CreateR1<NativeT>(max_valid_index);
-    if (literal.shape().element_type() != indices->shape().element_type()) {
-      TF_ASSIGN_OR_RETURN(max_valid_index_literal, literal.Convert(indices->shape().element_type()));
+    Literal max_valid_index_literal = LiteralUtil::CreateR1<int64_t>(max_valid_index);
+    if (max_valid_index_literal.shape().element_type() != indices->shape().element_type()) {
+      TF_ASSIGN_OR_RETURN(max_valid_index_literal, max_valid_index_literal.Convert(indices->shape().element_type()));
     }
     auto max_valid_index_constant = parent->AddInstruction(
       HloInstruction::CreateConstant(std::move(max_valid_index_literal)));
+    max_valid_index_constant = parent->AddInstruction(
+      HloInstruction::CreateBroadcast(indices->shape(), max_valid_index_constant, {1}));
     auto oob_check = parent->AddInstruction(
       HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, indices->shape().dimensions()), max_valid_index_constant, indices, ComparisonDirection::kGe)); 
     auto oob_check_mask = parent->AddInstruction(
-      HloInstruction::CreateReduce(ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), oob_index_check, {1}, HloOpcode::kAnd));
+      HloInstruction::CreateReduce(ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), oob_check, init_reduce_value, {1}, reduce_computation));
+    
     
     // Combine the results of the two checks above.
     auto* valid_index_mask = parent->AddInstruction(
-      HloInstruction::CreateBinary(ShapeUtil::MakeShape(PRED, indices->shape().dimensions()), HloOpcode::kAnd, zero_check_mask, oob_check_mask));
+      HloInstruction::CreateBinary(ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), HloOpcode::kAnd, zero_check_mask, oob_check_mask));
     return valid_index_mask;
 }
 
@@ -810,7 +743,7 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   scatter_indices = canonical_scatter_indices;
 
   bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
-  CHECK_EQ(scatter_indices->shape().dimensions_size(), 1);
+  // CHECK_EQ(scatter_indices->shape().dimensions_size(), 1);
   if (has_scalar_indices){
     // reshape the indices to be a 2D tensor
     scatter_indices = scatter->parent()->AddInstruction(
@@ -822,27 +755,18 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   // TODO(chenhao) change to actual checking
   bool non_scalar_update = true;
 
-  // // Compute the trip count for the while loop to be used for scatter. This
-  // // should be the number of indices we should scatter into the operand.
-  // int64_t scatter_loop_trip_count = ScatterTripCount(scatter);
-  // if (!IsInt32(scatter_loop_trip_count)) {
-  //   return Unimplemented(
-  //       "Scatter operations with more than 2147483647 scatter indices are not "
-  //       "supported. This error occurred for %s.",
-  //       scatter->ToString());
-  // }
   HloInstruction* expanded_mask;
   HloInstruction* scatter_update = scatter_updates[0];
+  HloInstruction* zero_column;
+
 
   if (non_scalar_update){
     auto updates_shape = scatter_updates[0]->shape();
     std::vector<int64_t> one_update_dimensions(updates_shape.dimensions().begin() + 1, updates_shape.dimensions().end());
     auto update_shape = ShapeUtil::MakeShape(updates_shape.element_type(), one_update_dimensions);
-    auto* index_offsets = ExpandIndexOffsetsFromUpdateShape(scatter->parent(), update_shape, dim_numbers);
-    // create a map that applies the MapFunc to each (index, update) pair
-    // auto* map_func = CheckAnyUpdateOutOfBound(scatter->parent(), index_offsets);
+    auto operand_shape = scatter_operands[0]->shape();
+    auto* index_offsets = ExpandIndexOffsetsFromUpdateShape(scatter->parent(), update_shape, dim_numbers, operand_shape);
     
-    // TODO(chenhao) (URGENT):
     auto update_dims = scatter_updates[0]->shape().dimensions();
     std::vector<int64_t> actual_update_slice_dims(update_dims.begin(), update_dims.end());
 
@@ -851,7 +775,7 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
         actual_update_slice_dims.insert(actual_update_slice_dims.begin() + dim, 1);
     }
     auto index_shape = ShapeUtil::MakeShape(scatter_indices->shape().element_type(), {1, scatter_indices->shape().dimensions(1)});
-    auto mask = CheckValidIndices(scatter_indices, scatter_operands[0]->shape().dimensions(), actual_update_slice_dims);
+    TF_ASSIGN_OR_RETURN(HloInstruction* oob_check_mask, CheckValidIndices(scatter->parent(), scatter_indices, scatter_operands[0]->shape().dimensions(), actual_update_slice_dims));
     
     // Expand the mask to the same shape as the expanded_updates
     expanded_mask = ExpandMask(scatter->parent(), oob_check_mask, update_shape);
@@ -878,44 +802,70 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
 
 
   // Create the shape for a single index tuple
-  auto num_indices = ShapeUtil::ElementsIn(indices_shape);
-  // TODO(chenhao) change check to differenciate scalar and non-scalar
+  auto num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
+  // TODO(chenhao) change check to differenciate scalar and non-scalar?
   // const Shape& index_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices, 1});
 
   const Shape& index_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices});
-  // For now lets just use one-d as a proof of concept
-  ScatterDimensionNumbers new_dim_numbers = scatter->scatter_dimension_numbers();
-  // auto update_window_dims = dim_numbers.update_window_dims();
-  // do a computation for update_window_dims since we changed them to be scalar updates
-  // for (int i=1; i < scatter_updates[0]->shape().dimensions_size(); i++){
-  //   // update_window_dims.push_back(i);
-  //   new_dim_numbers.set_update_window_dims(i-1, i);
-  // }
-  new_dim_numbers.set_scatter_dims_to_operand_dims(0,0);
-  new_dim_numbers.clear_update_window_dims();
-  // new_dim_numbers.set_index_vector_dim(0);
+  
   // TODO(chenhao) do some checking here
-  // new_dim_numbers.set_update_window_dims(update_window_dims);
+
+  // Create a new dimension numbers for the new scatter operation
+  ScatterDimensionNumbers new_dim_numbers;
+  new_dim_numbers.clear_update_window_dims();
+  new_dim_numbers.set_index_vector_dim(1);
+  // Mitigate the missed dimensions
+  for (int i=0; i < operand_shape.dimensions_size() - dim_numbers.input_batching_dims_size(); i++){
+    new_dim_numbers.add_inserted_window_dims(i);
+  }
+  // Set the scatter_dims_to_operand_dims
+  // copy from the original scatter_dims_to_operand_dims
+  for (int i=0; i < dim_numbers.scatter_dims_to_operand_dims_size(); i++){
+    new_dim_numbers.add_scatter_dims_to_operand_dims(dim_numbers.scatter_dims_to_operand_dims(i));
+  }
+
+
+  auto scalar_indices = FlattenIndices(scatter->parent(), scatter_indices, operand_dims);
+
+  // Create [0...num_indices] tensor for permutation in sorting using createIota
+  auto indices_permutation = parent->AddInstruction(
+    HloInstruction::CreateIota(ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices}), 0));
+
+  auto* comparison= SortingComparison(
+      module, 
+      ShapeUtil::MakeShape(indices_shape.element_type(), {}), 
+      ShapeUtil::MakeShape(scatter_updates[0]->shape().element_type(), {}));
+
+  int64_t sort_dimension = 0;
 
   scatter_update = parent->AddInstruction(
     HloInstruction::CreateReshape(ShapeUtil::MakeShape(scatter_update->shape().element_type(), {num_indices}), scatter_update));
-  scatter_indices = parent->AddInstruction(
-    HloInstruction::CreateReshape(index_shape, scatter_indices));
 
-  auto* comparison= SortingComparison(module, index_shape.element_type(), scatter_updates[0]->shape().element_type());
-  int64_t sort_dimension = 0;
-
-  // operands.insert(operands.end(), scatter_updates.begin(), scatter_updates.end());
-  std::vector<HloInstruction*> operands = {scatter_indices, scatter_update};
+  std::vector<HloInstruction*> operands = {scalar_indices, indices_permutation, scatter_update};
 
   auto* sorting = parent->AddInstruction(
-    HloInstruction::CreateSort(ShapeUtil::MakeTupleShape({scatter_indices->shape(), scatter_update->shape()}), sort_dimension, operands, comparison, false));
+    HloInstruction::CreateSort(ShapeUtil::MakeTupleShape({scalar_indices->shape(), indices_permutation->shape(), scatter_update->shape()}), sort_dimension, operands, comparison, false));
   auto* sorted_indices = parent->AddInstruction(
-    HloInstruction::CreateGetTupleElement(scatter_indices->shape(), sorting, 0));
+    HloInstruction::CreateGetTupleElement(scalar_indices->shape(), sorting, 0));
+  auto* sorted_indices_arg = parent->AddInstruction(
+    HloInstruction::CreateGetTupleElement(indices_permutation->shape(), sorting, 1));
   auto* sorted_updates = parent->AddInstruction(
-    HloInstruction::CreateGetTupleElement(scatter_update->shape(), sorting, 1));
+    HloInstruction::CreateGetTupleElement(scatter_update->shape(), sorting, 2));
+
+  // Use gather of sorted_indices_arg to get the sorted original indices
+  GatherDimensionNumbers gather_dim_numbers;
+  gather_dim_numbers.add_offset_dims(1);  // Preserving the inner dimension (columns)
+  // gather_dim_numbers.add_collapsed_slice_dims(0);  // Collapsing the first dimension (rows)
+  gather_dim_numbers.add_start_index_map(0);  // Mapping start_indices to the first dimension of the operand
+  gather_dim_numbers.add_operand_batching_dims(0);
+  gather_dim_numbers.set_index_vector_dim(1);
+  gather_dim_numbers.add_start_indices_batching_dims(0);
+
+  std::vector<int64_t> slice_sizes = {1, scatter_indices->shape().dimensions(1)};
+  auto* sorted_expanded_indices = scatter_indices;
+
+
   // Compute the scan
-  // auto* prefix_scan_updates = CreateScan(parent, sorted_updates);
   auto* prefix_scan_updates = CreateScanWithIndices(parent, sorted_updates, sorted_indices);
 
   // Compute which unique indices to write
@@ -934,35 +884,31 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
     HloInstruction::CreateConcatenate(ShapeUtil::MakeShape(PRED, {indices_len}), padding_operands, 0));
 
   // Mask the indices
-  // TODO(chenhao) : change the outofbound index to support multi-dim
-  auto* output_len_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR0<int>(scatter->shape().dimensions(0))));
-  auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(index_shape, output_len_constant, {}));
+  indices_mask = parent->AddInstruction(
+    HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(PRED, sorted_expanded_indices->shape().dimensions()), indices_mask, {0}));
+
+  auto* output_dimensions_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR1<int64_t>(scatter->shape().dimensions())));
+  output_dimensions_constant = parent->AddInstruction(HloInstruction::CreateConvert(ShapeUtil::MakeShape(sorted_expanded_indices->shape().element_type(), output_dimensions_constant->shape().dimensions()), output_dimensions_constant));
+
+  auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(sorted_expanded_indices->shape(), output_dimensions_constant, {1}));
+ 
   auto* masked_indices = parent->AddInstruction(
-    HloInstruction::CreateTernary(index_shape, HloOpcode::kSelect, indices_mask, sorted_indices, out_of_bound_tensor));
+    HloInstruction::CreateTernary(sorted_expanded_indices->shape(), HloOpcode::kSelect, indices_mask, sorted_expanded_indices, out_of_bound_tensor));
   
   if (non_scalar_update){
     // If non-scalar, we need to apply the oob_check_mask again onto the masked_indices
+    // broadcast to be the same shape as the sorted_expanded_indices
+    // TODO(chenhao): potentiall optimization opportunity here to combine the two masks
+    expanded_mask = parent->AddInstruction(
+      HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(PRED, masked_indices->shape().dimensions()), expanded_mask, {0}));
     masked_indices = parent->AddInstruction(
-      HloInstruction::CreateTernary(index_shape, HloOpcode::kSelect, expanded_mask, masked_indices, out_of_bound_tensor));
+      HloInstruction::CreateTernary(sorted_expanded_indices->shape(), HloOpcode::kSelect, expanded_mask, masked_indices, out_of_bound_tensor));
   }
-
-
 
   // Finally, recreate the scatter instruction with unique indices
   // TODO(chenhao): need to figure out how to handle multiple operands 
-  // auto* new_scatter = parent->AddInstruction(
-  //   HloInstruction::CreateScatter(scatter->shape(), scatter_operands[0], masked_indices, prefix_scan_updates, scatter->to_apply(), scatter->scatter_dimension_numbers(), true/*indices_are_sorted*/, true/*unique_indices*/));
-  // todo(chenhao) reshape the scatter_operands
-  auto operand = parent->AddInstruction(
-    HloInstruction::CreateReshape(ShapeUtil::MakeShape(scatter_operands[0]->shape().element_type(), {ShapeUtil::ElementsIn(scatter_operands[0]->shape())}), scatter_operands[0]));
-  auto temp_scatter_shape = ShapeUtil::MakeShape(scatter->shape().element_type(), {ShapeUtil::ElementsIn(scatter->shape())});
   auto* new_scatter = parent->AddInstruction(
-    HloInstruction::CreateScatter(temp_scatter_shape, operand, masked_indices, prefix_scan_updates, scatter->to_apply(), new_dim_numbers, true/*indices_are_sorted*/, true/*unique_indices*/));
-  
-  new_scatter = parent->AddInstruction(
-    HloInstruction::CreateReshape(scatter->shape(), new_scatter));
- 
-  
+    HloInstruction::CreateScatter(scatter->shape(), scatter_operands[0], masked_indices, prefix_scan_updates, scatter->to_apply(), new_dim_numbers, true/*indices_are_sorted*/, true/*unique_indices*/));
   return new_scatter;
 }
 
@@ -1007,3 +953,4 @@ bool ScatterDeterministicExpander::InstructionMatchesPattern(HloInstruction* ins
 }
 
 }  // namespace xla
+
