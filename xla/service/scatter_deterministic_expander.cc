@@ -431,8 +431,6 @@ static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
 // This is work-inefficient version
 HloInstruction* CreateScanWithIndices(HloComputation* parent, HloInstruction* updates, HloInstruction* indices){
   // TODO(chenhao) checkings, like make sure they are of the same length
-
-
   auto updates_shape = updates->shape();
   auto indices_shape = indices->shape();
   // Get the length of the input array
@@ -553,23 +551,6 @@ HloInstruction* ExpandUpdates(HloComputation* parent, HloInstruction* updates){
   const int64_t num_elements = ShapeUtil::ElementsIn(updates->shape());
   auto expanded_updates = parent->AddInstruction(HloInstruction::CreateReshape(ShapeUtil::MakeShape(updates->shape().element_type(), {num_elements}), updates));
   return expanded_updates;
-}
-
-// TODO(chenhao) check if the time or memory is a concern, for now we just write the code in a straightforward way
-HloInstruction* ExpandMask(HloComputation* parent, HloInstruction* mask, const Shape& update_shape){
-  // first broadcast the mask to the same shape as the expanded_updates, and then flatten it to a 1D tensor
-  // TODO(chenhao) check if the mask is a 1D tensor
-  // get the number of elements in the update tensor
-  int64_t num_elements_in_update = ShapeUtil::ElementsIn(update_shape);
-  int64_t mask_length  = mask->shape().dimensions(0);
-  auto reshaped_mask = parent->AddInstruction(HloInstruction::CreateReshape(ShapeUtil::MakeShape(PRED, {mask_length}), mask));
-
-  Shape broadcast_shape = ShapeUtil::MakeShape(PRED, {mask_length, num_elements_in_update});
-
-  auto broadcasted_mask = parent->AddInstruction(
-      HloInstruction::CreateBroadcast(broadcast_shape, reshaped_mask, {0}));
-  auto expanded_mask = parent->AddInstruction(HloInstruction::CreateReshape(ShapeUtil::MakeShape(PRED, {mask_length * num_elements_in_update}), broadcasted_mask));
-  return expanded_mask;
 }
 
 HloComputation* SortingComparison(HloModule* module, const Shape key_shape, const Shape update_shape){
@@ -698,7 +679,31 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   CHECK_EQ(scatter_loop_trip_count,
            canonical_scatter_indices->shape().dimensions(0));
 
+  // Canonicalize the updates, after which the size of its most-major dimension
+  // must be same as the while loop trip count.
+  std::vector<HloInstruction*> adjusted_canonical_updates;
+  adjusted_canonical_updates.reserve(scatter_updates.size());
+  for (HloInstruction* update : scatter_updates) {
+    TF_ASSIGN_OR_RETURN(
+        HloInstruction * canonical_update,
+        PermuteScatterAndWindowDims(update, dim_numbers.update_window_dims()));
+    TF_ASSIGN_OR_RETURN(
+        HloInstruction * adjusted_canonical_update,
+        AdjustScatterDims(scatter_indices->shape(), canonical_update,
+                          dim_numbers.index_vector_dim()));
+    CHECK_EQ(scatter_loop_trip_count,
+             adjusted_canonical_update->shape().dimensions(0));
+    adjusted_canonical_updates.push_back(adjusted_canonical_update);
+  }
+
   scatter_indices = canonical_scatter_indices;
+  scatter_updates = adjusted_canonical_updates;
+  // expand the indices into operand space
+  // TODO(chenhao) handle this?
+  // TF_ASSIGN_OR_RETURN(
+  //     scatter_indices,
+  //     ExpandIndexVectorIntoOperandSpace(scatter_indices, dim_numbers, scatter_operands[0]->shape().dimensions_size()));
+  // scatter_indices = ExpandIndexVectorIntoOperandSpace(scatter_indices, dim_numbers, scatter_operands[0]->shape().dimensions_size());
 
   bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
   // TODO(chenhao) do some checking
@@ -710,12 +715,14 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
       HloInstruction::CreateReshape(ShapeUtil::MakeShape(scatter_indices->shape().element_type(), {scatter_loop_trip_count, 1}), scatter_indices));
   }
 
+  auto index_length = scatter_indices->shape().dimensions(1);
+
   auto* parent = scatter->parent();
-  HloInstruction* expanded_mask;
+  auto num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
+  // HloInstruction* expanded_mask = nullptr;
   HloInstruction* scatter_update = scatter_updates[0];
 
   // Check if each update is a scalar based on update shape
-  // TODO(chenhao) change to actual checking
   bool non_scalar_update = scatter_update->shape().dimensions_size() > 1;
   // Extract operand dimensions
   const Shape& operand_shape = scatter_operands[0]->shape();
@@ -727,23 +734,40 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   const Shape& update_shape = ShapeUtil::MakeShape(updates_shape.element_type(), one_update_dimensions);
   
   ScatterDimensionNumbers new_dim_numbers;
-  if (non_scalar_update){
 
+  const Shape& expanded_indices_shape = ShapeUtil::MakeShape(scatter_indices->shape().element_type(), {num_indices, index_length});
+  auto* output_dimensions_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR1<int64_t>(scatter->shape().dimensions())));
+  output_dimensions_constant = parent->AddInstruction(HloInstruction::CreateConvert(ShapeUtil::MakeShape(scatter_indices->shape().element_type(), output_dimensions_constant->shape().dimensions()), output_dimensions_constant));
+  auto* test_oob_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(scatter_indices->shape(), output_dimensions_constant, {1}));
+
+  auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(expanded_indices_shape, output_dimensions_constant, {1}));
+
+  if (non_scalar_update){
     auto* index_offsets = ExpandIndexOffsetsFromUpdateShape(scatter->parent(), update_shape, dim_numbers, operand_shape);
     
-    std::vector<int64_t> actual_update_slice_dims(updates_dims.begin(), updates_dims.end());
-
-    // Insert dimensions of size 1 for each index in inserted_window_dims
-    for (int64_t dim : dim_numbers.inserted_window_dims()) {
-        actual_update_slice_dims.insert(actual_update_slice_dims.begin() + dim, 1);
+    int num_operand_dims = operand_shape.dimensions_size();
+    std::vector<int64_t> actual_update_window_dims(num_operand_dims);
+    int update_dim_index = 0;
+    for (int i = 0; i < num_operand_dims; ++i) {
+      if (std::find(dim_numbers.inserted_window_dims().begin(), dim_numbers.inserted_window_dims().end(), i) != dim_numbers.inserted_window_dims().end()){
+        actual_update_window_dims[i] = 1;
+      } else {
+        actual_update_window_dims[i] = update_shape.dimensions(update_dim_index);
+        update_dim_index++;
+      }
     }
+    
     auto index_shape = ShapeUtil::MakeShape(scatter_indices->shape().element_type(), {1, scatter_indices->shape().dimensions(1)});
-    TF_ASSIGN_OR_RETURN(HloInstruction* oob_check_mask, CheckValidIndices(scatter->parent(), scatter_indices, scatter_operands[0]->shape().dimensions(), actual_update_slice_dims));
+
+    TF_ASSIGN_OR_RETURN(HloInstruction* oob_check_mask, CheckValidIndices(scatter->parent(), scatter_indices, scatter_operands[0]->shape().dimensions(), actual_update_window_dims));
     
-    // Expand the mask to the same shape as the expanded_updates
-    expanded_mask = ExpandMask(scatter->parent(), oob_check_mask, update_shape);
-    
+    // if any updates are out of bound, we change the corresponding indices to be oob_tensor values
+    oob_check_mask = parent->AddInstruction(
+      HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(PRED, scatter_indices->shape().dimensions()), oob_check_mask, {0}));
+    scatter_indices = parent->AddInstruction(
+      HloInstruction::CreateTernary(scatter_indices->shape(), HloOpcode::kSelect, oob_check_mask, scatter_indices, test_oob_tensor));
     scatter_indices = ExpandIndices(scatter->parent(), scatter_indices, index_offsets);
+
     // TODO(chenhao) need to check when to use index 0 and when to use whole updates
     scatter_update = ExpandUpdates(scatter->parent(), scatter_updates[0]);
 
@@ -767,9 +791,6 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   // Assume scatter_indices is defined and is an HloInstruction pointer
   const Shape& indices_shape = scatter_indices->shape();
   
-  auto num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
-  // TODO(chenhao) change check to differenciate scalar and non-scalar?
-
   // Create the shape for a single index tuple
   const Shape& scalar_index_shape = ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices});
 
@@ -834,23 +855,8 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
   indices_mask = parent->AddInstruction(
     HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(PRED, sorted_expanded_indices->shape().dimensions()), indices_mask, {0}));
 
-  auto* output_dimensions_constant = parent->AddInstruction(HloInstruction::CreateConstant(LiteralUtil::CreateR1<int64_t>(scatter->shape().dimensions())));
-  output_dimensions_constant = parent->AddInstruction(HloInstruction::CreateConvert(ShapeUtil::MakeShape(sorted_expanded_indices->shape().element_type(), output_dimensions_constant->shape().dimensions()), output_dimensions_constant));
-
-  auto* out_of_bound_tensor = parent->AddInstruction(HloInstruction::CreateBroadcast(sorted_expanded_indices->shape(), output_dimensions_constant, {1}));
- 
   auto* masked_indices = parent->AddInstruction(
     HloInstruction::CreateTernary(sorted_expanded_indices->shape(), HloOpcode::kSelect, indices_mask, sorted_expanded_indices, out_of_bound_tensor));
-  
-  if (non_scalar_update){
-    // If non-scalar, we need to apply the oob_check_mask again onto the masked_indices
-    // broadcast to be the same shape as the sorted_expanded_indices
-    // TODO(chenhao): potentiall optimization opportunity here to combine the two masks
-    expanded_mask = parent->AddInstruction(
-      HloInstruction::CreateBroadcast(ShapeUtil::MakeShape(PRED, masked_indices->shape().dimensions()), expanded_mask, {0}));
-    masked_indices = parent->AddInstruction(
-      HloInstruction::CreateTernary(sorted_expanded_indices->shape(), HloOpcode::kSelect, expanded_mask, masked_indices, out_of_bound_tensor));
-  }
 
   // Finally, recreate the scatter instruction with unique indices
   // TODO(chenhao): need to figure out how to handle multiple operands 
