@@ -439,7 +439,7 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
         scatter->ToString());
   }
 
-   // Canonicalize the scatter_indices, after which the size of its most-major
+  // Canonicalize the scatter_indices, after which the size of its most-major
   // dimension must be same as the while loop trip count.
   TF_ASSIGN_OR_RETURN(HloInstruction * canonical_scatter_indices,
                       CanonicalizeScatterIndices(
@@ -470,7 +470,7 @@ absl::StatusOr<HloInstruction*> ScatterExpander::ExpandInstruction(
   absl::c_copy(scatter_operands, std::back_inserter(loop_state));
   loop_state.push_back(canonical_scatter_indices);
   absl::c_copy(adjusted_canonical_updates, std::back_inserter(loop_state));
-  StatusOr<std::vector<HloInstruction*>> scatter_loop_result_status =
+  absl::StatusOr<std::vector<HloInstruction*>> scatter_loop_result_status =
       WhileUtil::MakeCountedLoop(
           scatter->parent(), scatter_loop_trip_count, loop_state,
           [scatter](HloInstruction* induction_var,
