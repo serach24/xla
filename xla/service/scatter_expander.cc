@@ -524,7 +524,9 @@ bool ScatterExpander::InstructionMatchesPattern(HloInstruction* inst) {
   auto* scatter = DynCast<HloScatterInstruction>(inst);
   return (scatter != nullptr) && (mode_ == kEliminateAllScatters ||
                                   (mode_ == kEliminateSimpleScatters &&
-                                   ScatterTripCount(scatter) == 1));
+                                   ScatterTripCount(scatter) == 1) ||
+                                  (mode_ == kEliminateIndeterministicScatters &&
+                                   !IsDeterministic(scatter)));
 }
 
 }  // namespace xla
