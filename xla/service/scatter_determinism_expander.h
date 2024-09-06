@@ -20,45 +20,23 @@ limitations under the License.
 
 namespace xla {
 
-// This pass rewrites scatter operations into (roughly) while loops of
-// dynamic-update-slices.
-//
-// This pass can be used in three ways:
-//
-//   - kEliminateAllScatters: For backends that don't support scatter, this pass
-//     can convert every scatter into a loop.
-//
-//   - kEliminateSimpleScatters: For backends that *do* support scatter, this
-//     pass can strength-reduce "simple" scatters -- specifically, scatters that
-//     can be represented without a loop -- to dynamic-update-slices.
-//
-//   - kEliminateIndeterministicScatters: For backends that *do* support
-//     scatter, this pass converts scatters with potentially indeterministic
-//     behavior, because of non-unique indices or non-associative combiner
-//     functions. There may be false positives, but no false negatives, i.e.
-//     some scatters are converted even when deterministic in practice.
-//
-// Note that even in kEliminateSimpleScatters mode, this pass may still expand a
-// scatter into a loop (with a trip-count of 1).  It's up to other
-// simplification passes to remove the loop.
+// This pass rewrites scatter operations into a prefix-scan based algorithm that
+// ensures the scatter esults to be determininstic. Note that the computation
+// after the expansion still contains a scatter operation, but it does not have
+// duplicated indices and hence the results are guaranteed to be deterministic.
 class ScatterDeterminismExpander : public OpExpanderPass {
  public:
-  // enum Mode {
-  //   kEliminateAllScatters,
-  //   kEliminateSimpleScatters,
-  //   kEliminateIndeterministicScatters,
-  // };
-
   explicit ScatterDeterminismExpander() {}
 
-  absl::string_view name() const override { return "scatter_determinism_expander"; }
+  absl::string_view name() const override {
+    return "scatter_determinism_expander";
+  }
 
  protected:
   bool InstructionMatchesPattern(HloInstruction* inst) override;
 
   absl::StatusOr<HloInstruction*> ExpandInstruction(
       HloInstruction* inst) override;
-
 };
 
 }  // namespace xla
