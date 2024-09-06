@@ -901,11 +901,15 @@ bool IsDeterministic(const HloScatterInstruction* scatter) {
 
 bool ScatterDeterminismExpander::InstructionMatchesPattern(HloInstruction* inst) {
   auto* scatter = DynCast<HloScatterInstruction>(inst);
-  // Need to check if updates and indices are scalar, as the current pass does not perform 
-  // expanderThis is temporary and will be removed 
-  // in a PR soon.  
+  // Need to check if updates and indices are scalar, as the current pass does not expand scatter
+  // with multi-dimensional updates or indices. This is temporary and will be removed in a future PR soon.  
+  if (scatter == nullptr) {
+    return false;
+  }
+  bool has_scalar_indices = scatter->scatter_indices()->shape().dimensions_size() == 1;
+  bool has_scalar_updates = scatter->scatter_updates()[0]->shape().dimensions_size() == 1;
   
-  return (scatter != nullptr) && !IsDeterministic(scatter);
+  return has_scalar_indices && has_scalar_updates && !IsDeterministic(scatter);
 }
 
 }  // namespace xla
