@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_SERVICE_SCATTER_DETERMINISTIC_EXPANDER_H_
-#define XLA_SERVICE_SCATTER_DETERMINISTIC_EXPANDER_H_
+#ifndef XLA_SERVICE_scatter_determinism_expander_H_
+#define XLA_SERVICE_scatter_determinism_expander_H_
 
 #include "xla/service/op_expander_pass.h"
 
@@ -41,7 +41,7 @@ namespace xla {
 // Note that even in kEliminateSimpleScatters mode, this pass may still expand a
 // scatter into a loop (with a trip-count of 1).  It's up to other
 // simplification passes to remove the loop.
-class ScatterDeterministicExpander : public OpExpanderPass {
+class ScatterDeterminismExpander : public OpExpanderPass {
  public:
   // enum Mode {
   //   kEliminateAllScatters,
@@ -49,9 +49,9 @@ class ScatterDeterministicExpander : public OpExpanderPass {
   //   kEliminateIndeterministicScatters,
   // };
 
-  explicit ScatterDeterministicExpander() {}
+  explicit ScatterDeterminismExpander() {}
 
-  absl::string_view name() const override { return "scatter_deterministic_expander"; }
+  absl::string_view name() const override { return "scatter_determinism_expander"; }
 
  protected:
   bool InstructionMatchesPattern(HloInstruction* inst) override;
@@ -63,4 +63,4 @@ class ScatterDeterministicExpander : public OpExpanderPass {
 
 }  // namespace xla
 
-#endif  // XLA_SERVICE_SCATTER_DETERMINISTIC_EXPANDER_H_
+#endif  // XLA_SERVICE_scatter_determinism_expander_H_

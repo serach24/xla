@@ -2529,9 +2529,9 @@ cc_library(
 
 
 cc_library(
-    name = "scatter_deterministic_expander",
-    srcs = ["scatter_deterministic_expander.cc"],
-    hdrs = ["scatter_deterministic_expander.h"],
+    name = "scatter_determinism_expander",
+    srcs = ["scatter_determinism_expander.cc"],
+    hdrs = ["scatter_determinism_expander.h"],
     deps = [
         ":call_inliner",
         ":hlo_creation_utils",

@@ -1547,7 +1547,7 @@ cc_library(
         "//xla/service:rng_bit_generator_expander",
         "//xla/service:rng_expander",
         "//xla/service:scatter_expander",
-        "//xla/service:scatter_deterministic_expander",
+        "//xla/service:scatter_determinism_expander",
         "//xla/service:scatter_simplifier",
         "//xla/service:sharding_remover",
         "//xla/service:simplify_fp_conversions",

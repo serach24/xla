@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/service/scatter_deterministic_expander.h"
+#include "xla/service/scatter_determinism_expander.h"
 
 #include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
@@ -26,7 +26,6 @@ limitations under the License.
 #include "xla/literal_util.h"
 #include "xla/service/call_inliner.h"
 #include "xla/service/hlo_creation_utils.h"
-#include "xla/service/while_util.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -642,7 +641,7 @@ StatusOr<HloInstruction*> CheckValidIndices(HloComputation *parent,
     return valid_index_mask;
 }
 
-absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
+absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
     HloInstruction* inst) {
   auto* scatter = Cast<HloScatterInstruction>(inst);
   auto scatter_operands = scatter->scatter_operands();
@@ -806,7 +805,7 @@ absl::StatusOr<HloInstruction*> ScatterDeterministicExpander::ExpandInstruction(
       ShapeUtil::MakeShape(updates_shape.element_type(), {}));
   std::vector<HloInstruction*> sort_operands = {scalar_indices, indices_permutation, scatter_update};
   auto* sorting = parent->AddInstruction(
-    HloInstruction::CreateSort(ShapeUtil::MakeTupleShape({scalar_indices->shape(), indices_permutation->shape(), scatter_update->shape()}), 0/*sort_dimension*/, sort_operands, comparison, false/*is_stable*/));
+    HloInstruction::CreateSort(ShapeUtil::MakeTupleShape({scalar_indices->shape(), indices_permutation->shape(), scatter_update->shape()}), 0, sort_operands, comparison, false/*is_stable*/));
   auto* sorted_indices = parent->AddInstruction(
     HloInstruction::CreateGetTupleElement(scalar_indices->shape(), sorting, 0));
   auto* sorted_indices_arg = parent->AddInstruction(
@@ -900,8 +899,12 @@ bool IsDeterministic(const HloScatterInstruction* scatter) {
 
 }  // namespace
 
-bool ScatterDeterministicExpander::InstructionMatchesPattern(HloInstruction* inst) {
+bool ScatterDeterminismExpander::InstructionMatchesPattern(HloInstruction* inst) {
   auto* scatter = DynCast<HloScatterInstruction>(inst);
+  // Need to check if updates and indices are scalar, as the current pass does not perform 
+  // expanderThis is temporary and will be removed 
+  // in a PR soon.  
+  
   return (scatter != nullptr) && !IsDeterministic(scatter);
 }
 
