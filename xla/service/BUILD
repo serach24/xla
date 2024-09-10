@@ -2544,12 +2544,32 @@ cc_library(
     ],
 )
 
-
 xla_cc_test(
     name = "scatter_expander_test",
     srcs = ["scatter_expander_test.cc"],
     deps = [
         ":scatter_expander",
+        "//xla:literal",
+        "//xla:shape_util",
+        "//xla:test",
+        "//xla:types",
+        "//xla/hlo/ir:hlo",
+        "//xla/hlo/utils:hlo_matchers",
+        "//xla/tests:hlo_test_base",
+        "//xla/tests:xla_internal_test_main",
+        "//xla/tsl/lib/core:status_test_util",
+    ],
+)
+
+xla_test(
+    name = "scatter_determinism_expander_test",
+    srcs = ["scatter_determinism_expander_test.cc"],
+    backends = [
+        "cpu",
+        "gpu",
+    ],
+    deps = [
+        ":scatter_determinism_expander",
         "//xla:literal",
         "//xla:shape_util",
         "//xla:test",

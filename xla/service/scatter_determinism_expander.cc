@@ -1029,12 +1029,19 @@ bool ScatterDeterminismExpander::InstructionMatchesPattern(
   if (scatter == nullptr) {
     return false;
   }
-  bool has_scalar_indices =
-      scatter->scatter_indices()->shape().dimensions_size() == 1;
-  bool has_scalar_updates =
-      scatter->scatter_updates()[0]->shape().dimensions_size() == 1;
 
-  return has_scalar_indices && has_scalar_updates && !IsDeterministic(scatter);
+  const Shape& indices_shape = scatter->scatter_indices()->shape();
+  const Shape& updates_shape = scatter->scatter_updates()[0]->shape();
+
+  // Check if indices and updates are effectively 1D.
+  bool indices_are_1d =
+      (indices_shape.rank() == 1 ||
+       (indices_shape.rank() == 2 && indices_shape.dimensions(1) == 1));
+  bool updates_are_1d =
+      (updates_shape.rank() == 1 ||
+       (updates_shape.rank() == 2 && updates_shape.dimensions(1) == 1));
+
+  return indices_are_1d && updates_are_1d && !IsDeterministic(scatter);
 }
 
 }  // namespace xla
