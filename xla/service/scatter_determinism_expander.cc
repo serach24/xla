@@ -26,6 +26,7 @@ limitations under the License.
 #include "xla/literal_util.h"
 #include "xla/service/call_inliner.h"
 #include "xla/service/hlo_creation_utils.h"
+#include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -280,138 +281,6 @@ static absl::StatusOr<HloComputation*> CallAndGetOutput(
   return new_comp;
 }
 
-// Body of the while loop that performs the scatter operation using other HLOs.
-static absl::StatusOr<std::vector<HloInstruction*>> ScatterLoopBody(
-    HloScatterInstruction* scatter, HloInstruction* induction_var,
-    absl::Span<HloInstruction* const> loop_state) {
-  const ScatterDimensionNumbers& dim_numbers =
-      scatter->scatter_dimension_numbers();
-  CHECK_EQ(loop_state.size(), scatter->operand_count());
-  auto operands = loop_state.first(scatter->scatter_operand_count());
-  HloInstruction* scatter_indices = loop_state[operands.size()];
-  auto updates = loop_state.last(operands.size());
-
-  bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
-
-  // Build a vector form of the induction variable of the while loop.
-  HloInstruction* induction_var_as_vector =
-      MakeBroadcastHlo(induction_var, /*broadcast_dimensions=*/{},
-                       /*result_shape_bounds=*/{1});
-
-  // Pick the index to scatter from scatter_indices based on the induction_var
-  // and transform that to an index into the `operand` space.
-  HloInstruction* index_vector;
-  if (has_scalar_indices) {
-    TF_ASSIGN_OR_RETURN(
-        index_vector,
-        MakeDynamicSliceHlo(scatter_indices, induction_var_as_vector, {1}));
-  } else {
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * index_into_scatter_indices,
-        PadVectorWithZeros(induction_var_as_vector,
-                           /*zeros_to_prepend=*/0, /*zeros_to_append=*/1));
-    int index_vector_size = scatter_indices->shape().dimensions(1);
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * index_vector_2d,
-        MakeDynamicSliceHlo(scatter_indices, index_into_scatter_indices,
-                            {1, index_vector_size}));
-    TF_ASSIGN_OR_RETURN(index_vector,
-                        ElideDegenerateDims(index_vector_2d, {0}));
-  }
-  TF_ASSIGN_OR_RETURN(
-      HloInstruction * scatter_slice_start,
-      ExpandIndexVectorIntoOperandSpace(
-          index_vector, dim_numbers, operands[0]->shape().dimensions_size()));
-
-  // Extract the slice to be used to update from `updates` tensor for the
-  // induction_var corresponding to this iteration of the while loop.
-  TF_ASSIGN_OR_RETURN(
-      HloInstruction * index_into_updates,
-      PadVectorWithZeros(
-          induction_var_as_vector, /*zeros_to_prepend=*/0,
-          /*zeros_to_append=*/updates[0]->shape().dimensions_size() - 1));
-  std::vector<int64_t> update_slice_bounds(
-      updates[0]->shape().dimensions().begin(),
-      updates[0]->shape().dimensions().end());
-  update_slice_bounds[0] = 1;
-
-  absl::InlinedVector<HloInstruction*, 2> map_operands(
-      operands.size() + updates.size(), nullptr);
-  auto operand_slices_to_update =
-      absl::MakeSpan(map_operands).first(operands.size());
-  auto update_slices_with_dims_inserted =
-      absl::MakeSpan(map_operands).last(updates.size());
-  absl::Span<const int64_t> actual_update_slice_dims;
-  for (int i = 0, n = operands.size(); i < n; ++i) {
-    HloInstruction* update = updates[i];
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * update_slice,
-        MakeDynamicSliceHlo(update, index_into_updates, update_slice_bounds));
-    TF_ASSIGN_OR_RETURN(HloInstruction * update_slice_for_scatter,
-                        ElideDegenerateDims(update_slice, {0}));
-    TF_ASSIGN_OR_RETURN(
-        HloInstruction * update_slice_with_dims_inserted,
-        InsertDegenerateDims(update_slice_for_scatter,
-                             dim_numbers.inserted_window_dims()));
-    update_slices_with_dims_inserted[i] = update_slice_with_dims_inserted;
-    // Note that the following transformation assumes that both DynamicSlice and
-    // DynamicUpdateSlice follow the same semantics for OOB indices. For
-    // example, if there are negative indices and DynamicSlice uses "clamping"
-    // semantics, then the extracted data will be "shifted". Since
-    // DynamicUpdateSlice also follows the same "clamping" semantics, writing
-    // the update will also be "shifted" by exactly the same amount. So, this
-    // transformation is correct as long as the semantics of handling OOB
-    // indices remain the same in DynamicSlice and DynamicUpdateSlice.
-
-    // Extract the slice to update from `operand` tensor.
-    HloInstruction* operand = operands[i];
-    const Shape& update_slice_shape = update_slice_with_dims_inserted->shape();
-    TF_ASSIGN_OR_RETURN(HloInstruction * operand_slice_to_update,
-                        MakeDynamicSliceHlo(operand, scatter_slice_start,
-                                            update_slice_shape.dimensions()));
-    operand_slices_to_update[i] = operand_slice_to_update;
-    if (i == 0) {
-      actual_update_slice_dims = update_slice_shape.dimensions();
-    } else {
-      TF_RET_CHECK(actual_update_slice_dims == update_slice_shape.dimensions());
-    }
-  }
-
-  TF_ASSIGN_OR_RETURN(
-      HloInstruction * is_index_valid,
-      CheckIndexValidity(operands[0]->parent(), scatter_slice_start,
-                         operands[0]->shape().dimensions(),
-                         actual_update_slice_dims, scatter->GetModule()));
-
-  // Write the updated value of the slice into `operand` tensor.
-  std::vector<HloInstruction*> updated_loop_state;
-  updated_loop_state.reserve(loop_state.size());
-  for (int i = 0, n = operands.size(); i < n; ++i) {
-    // Compute the new value for the slice to be updated in `operand` tensor by
-    // combining the existing value and the update value using the update
-    // computation.
-    // NOTE: For scatters with N outputs, we currently have duplicate the Map
-    // computation N times because we don't support multioutput Map yet.
-    TF_ASSIGN_OR_RETURN(HloComputation * to_apply,
-                        CallAndGetOutput(scatter->to_apply(), i));
-    TF_ASSIGN_OR_RETURN(HloInstruction * updated_operand_slice,
-                        MakeMapHlo(map_operands, to_apply));
-    // Select the updated operand only if the index is valid. If not, select the
-    // original value.
-    TF_ASSIGN_OR_RETURN(HloInstruction * updates_to_apply,
-                        MakeSelectHlo(is_index_valid, updated_operand_slice,
-                                      operand_slices_to_update[i]));
-    TF_ASSIGN_OR_RETURN(HloInstruction * updated_operand,
-                        MakeDynamicUpdateSliceHlo(operands[i], updates_to_apply,
-                                                  scatter_slice_start));
-    updated_loop_state.push_back(updated_operand);
-  }
-  updated_loop_state.push_back(scatter_indices);
-  absl::c_copy(updates, std::back_inserter(updated_loop_state));
-
-  return updated_loop_state;
-}
-
 static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
   // Compute the trip count for the while loop to be used for scatter. This
   // should be the number of indices we should scatter into the operand.
@@ -516,6 +385,7 @@ HloInstruction* ExpandIndexOffsetsFromUpdateShape(
   int64_t operand_rank = operand_shape.dimensions_size();
   Array2D<int> offset_tensor(num_elements, operand_rank);
 
+  // todo(chenhao) consider if we should optimize this
   for (int64_t linear_index = 0; linear_index < num_elements; ++linear_index) {
     // Calculate the multi-dimensional index from the linear index
     int64_t current_index = linear_index;
@@ -551,8 +421,8 @@ HloInstruction* ExpandIndexOffsetsFromUpdateShape(
 }
 
 // For each (index, update) pair, calculate the new indices
-// TODO(maybe could reshape the indices before the map to avoid reshape for
-// indices and mask)
+// TODO(chenhao) maybe could reshape the indices before the map to avoid reshape
+// for indices and mask)
 HloInstruction* ExpandIndices(HloComputation* parent, HloInstruction* indices,
                               HloInstruction* index_offsets) {
   // For each index we need to add the index_offset to the base index
@@ -588,7 +458,8 @@ HloInstruction* ExpandUpdates(HloComputation* parent, HloInstruction* updates) {
 }
 
 HloComputation* SortingComparison(HloModule* module, const Shape key_shape,
-                                  const Shape update_shape) {
+                                  const Shape update_shape,
+                                  int64_t num_updates) {
   HloComputation::Builder builder("sorting_computation");
   auto param0 = builder.AddInstruction(
       HloInstruction::CreateParameter(0, key_shape, "lhs_key"));
@@ -598,10 +469,16 @@ HloComputation* SortingComparison(HloModule* module, const Shape key_shape,
       HloInstruction::CreateParameter(2, key_shape, "lhs_indices"));
   builder.AddInstruction(
       HloInstruction::CreateParameter(3, key_shape, "rhs_indices"));
-  builder.AddInstruction(
-      HloInstruction::CreateParameter(4, update_shape, "lhs_updates"));
-  builder.AddInstruction(
-      HloInstruction::CreateParameter(5, update_shape, "rhs_updates"));
+  for (int i = 0; i < num_updates; ++i) {
+    builder.AddInstruction(HloInstruction::CreateParameter(
+        4 + i, update_shape, absl::StrCat("lhs_update_", i)));
+    builder.AddInstruction(HloInstruction::CreateParameter(
+        4 + 1 + i, update_shape, absl::StrCat("rhs_update_", i)));
+  }
+  // builder.AddInstruction(
+  //     HloInstruction::CreateParameter(4, update_shape, "lhs_updates"));
+  // builder.AddInstruction(
+  //     HloInstruction::CreateParameter(5, update_shape, "rhs_updates"));
   builder.AddInstruction(
       HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0,
                                     param1, ComparisonDirection::kLt));
@@ -662,6 +539,7 @@ StatusOr<HloInstruction*> CheckValidIndices(
 
   // 2. Check last indices <= [bounds...]
   // Check if the index is OOB w.r.t. the operand dimensions and window sizes.
+  // Todo(chenhao): figure out if there is a bug here
   std::vector<int64_t> max_valid_index(operand_dims.size());
   for (int i = 0; i < operand_dims.size(); ++i) {
     max_valid_index[i] = operand_dims[i] - window_sizes[i];
@@ -699,7 +577,8 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   auto* scatter = Cast<HloScatterInstruction>(inst);
   auto scatter_operands = scatter->scatter_operands();
   HloInstruction* scatter_indices = scatter->scatter_indices();
-  auto scatter_updates = scatter->scatter_updates();
+  std::vector<HloInstruction*> scatter_updates(
+      scatter->scatter_updates().begin(), scatter->scatter_updates().end());
   const ScatterDimensionNumbers& dim_numbers =
       scatter->scatter_dimension_numbers();
 
@@ -779,10 +658,9 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   auto* parent = scatter->parent();
   auto num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
   // HloInstruction* expanded_mask = nullptr;
-  HloInstruction* scatter_update = scatter_updates[0];
 
   // Check if each update is a scalar based on update shape
-  bool non_scalar_update = scatter_update->shape().dimensions_size() > 1;
+  bool non_scalar_update = scatter_updates[0]->shape().dimensions_size() > 1;
   // Extract operand dimensions
   const Shape& operand_shape = scatter_operands[0]->shape();
   auto operand_dims = operand_shape.dimensions();
@@ -856,9 +734,9 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
     scatter_indices =
         ExpandIndices(scatter->parent(), scatter_indices, index_offsets);
 
-    // TODO(chenhao) need to check when to use index 0 and when to use whole
-    // updates
-    scatter_update = ExpandUpdates(scatter->parent(), scatter_updates[0]);
+    for (int i = 0; i < scatter_updates.size(); i++) {
+      scatter_updates[i] = ExpandUpdates(scatter->parent(), scatter_updates[i]);
+    }
 
     // Create a new dimension numbers for the new scatter operation
     new_dim_numbers.clear_update_window_dims();
@@ -897,15 +775,23 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   auto* comparison =
       SortingComparison(scatter->GetModule(),
                         ShapeUtil::MakeShape(indices_shape.element_type(), {}),
-                        ShapeUtil::MakeShape(updates_shape.element_type(), {}));
-  std::vector<HloInstruction*> sort_operands = {
-      scalar_indices, indices_permutation, scatter_update};
+                        ShapeUtil::MakeShape(updates_shape.element_type(), {}),
+                        scatter_updates.size());
+  // std::vector<HloInstruction*> sort_operands = {
+  //     scalar_indices, indices_permutation, scatter_update};
+  std::vector<HloInstruction*> sort_operands = {scalar_indices,
+                                                indices_permutation};
+  std::vector<Shape> sort_shapes = {scalar_index_shape,
+                                    indices_permutation->shape()};
+  for (auto update : scatter_updates) {
+    sort_operands.push_back(update);
+    sort_shapes.push_back(update->shape());
+  }
+
   auto* sorting = parent->AddInstruction(HloInstruction::CreateSort(
-      ShapeUtil::MakeTupleShape({scalar_indices->shape(),
-                                 indices_permutation->shape(),
-                                 scatter_update->shape()}),
-      0, sort_operands, comparison, false /*is_stable*/));
-  auto* sorted_indices =
+      ShapeUtil::MakeTupleShape(sort_shapes), 0, sort_operands, comparison,
+      false /*is_stable*/));
+  auto* sorted_scalar_indices =
       parent->AddInstruction(HloInstruction::CreateGetTupleElement(
           scalar_indices->shape(), sorting, 0));
   auto* sorted_indices_arg =
@@ -915,9 +801,16 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
       ShapeUtil::MakeShape(sorted_indices_arg->shape().element_type(),
                            {num_indices, 1}),
       sorted_indices_arg));
-  auto* sorted_updates =
-      parent->AddInstruction(HloInstruction::CreateGetTupleElement(
-          scatter_update->shape(), sorting, 2));
+
+  std::vector<HloInstruction*> sorted_updates(scatter_updates.size());
+  for (int i = 0; i < scatter_updates.size(); i++) {
+    sorted_updates[i] =
+        parent->AddInstruction(HloInstruction::CreateGetTupleElement(
+            scatter_updates[i]->shape(), sorting, i + 2));
+  }
+  // auto* sorted_updates =
+  //     parent->AddInstruction(HloInstruction::CreateGetTupleElement(
+  //         scatter_update->shape(), sorting, 2));
 
   // Use gather of sorted_indices_arg to get the sorted original indices
   GatherDimensionNumbers gather_dim_numbers;
@@ -927,7 +820,6 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
       0);  // Mapping start_indices to the first dimension of the operand
   gather_dim_numbers.add_collapsed_slice_dims(0);
   gather_dim_numbers.set_index_vector_dim(1);
-
   std::vector<int64_t> slice_sizes = {1,
                                       scatter_indices->shape().dimensions(1)};
   auto* sorted_expanded_indices =
@@ -937,21 +829,24 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
           /*indices_are_sorted=*/true));
 
   // Compute the scan
-  auto* prefix_scan_updates =
-      CreateScanWithIndices(parent, sorted_updates, sorted_indices);
+  std::vector<HloInstruction*> prefix_scan_updates(scatter_updates.size());
+  for (int i = 0; i < scatter_updates.size(); i++) {
+    prefix_scan_updates[i] =
+        CreateScanWithIndices(parent, sorted_updates[i], sorted_scalar_indices);
+  }
 
   // Compute which unique indices to write
-  int64_t indices_len = sorted_indices->shape().dimensions(0);
+  int64_t indices_len = sorted_scalar_indices->shape().dimensions(0);
   auto* sorted_indices_preceding_part =
       parent->AddInstruction(HloInstruction::CreateSlice(
           ShapeUtil::MakeShape(scalar_index_shape.element_type(),
                                {indices_len - 1}),
-          sorted_indices, {0}, {indices_len - 1}, {1}));
+          sorted_scalar_indices, {0}, {indices_len - 1}, {1}));
   auto* sorted_indices_following_part =
       parent->AddInstruction(HloInstruction::CreateSlice(
           ShapeUtil::MakeShape(scalar_index_shape.element_type(),
                                {indices_len - 1}),
-          sorted_indices, {1}, {indices_len}, {1}));
+          sorted_scalar_indices, {1}, {indices_len}, {1}));
   auto* indices_mask_without_padding =
       parent->AddInstruction(HloInstruction::CreateCompare(
           ShapeUtil::MakeShape(PRED, {indices_len - 1}),
@@ -979,9 +874,9 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   // Finally, recreate the scatter instruction with unique indices
   // TODO(chenhao): need to figure out how to handle multiple operands
   auto* new_scatter = parent->AddInstruction(HloInstruction::CreateScatter(
-      scatter->shape(), scatter_operands[0], masked_indices,
-      prefix_scan_updates, scatter->to_apply(), new_dim_numbers,
-      true /*indices_are_sorted*/, true /*unique_indices*/));
+      scatter->shape(), scatter_operands, masked_indices, prefix_scan_updates,
+      scatter->to_apply(), new_dim_numbers, true /*indices_are_sorted*/,
+      true /*unique_indices*/));
   return new_scatter;
 }
 
