@@ -132,47 +132,6 @@ static absl::StatusOr<HloInstruction*> AdjustScatterDims(
   return CollapseFirstNDims(updates, num_scatter_dims);
 }
 
-// Expands an index vector from the scatter_indices tensor into a vector that
-// can be used to dynamic-update-slice to perform the scatter update.
-static absl::StatusOr<HloInstruction*> ExpandIndexVectorIntoOperandSpace(
-    HloInstruction* index_vector, const ScatterDimensionNumbers& dim_numbers,
-    int64_t operand_rank) {
-  HloComputation* computation = index_vector->parent();
-  const Shape& index_shape = index_vector->shape();
-
-  // Scatter of a scalar. Return a zero-sized vector of indices.
-  if (operand_rank == 0) {
-    return computation->AddInstruction(HloInstruction::CreateConstant(
-        LiteralUtil::CreateFromDimensions(index_shape.element_type(), {0})));
-  }
-
-  HloInstruction* zero =
-      computation->AddInstruction(HloInstruction::CreateConstant(
-          LiteralUtil::CreateFromDimensions(index_shape.element_type(), {1})));
-
-  // We extract out individual components from the smaller index and concatenate
-  // them (interspersing zeros as needed) into the larger index.
-  std::vector<HloInstruction*> expanded_index_components;
-
-  for (int i = 0; i < operand_rank; i++) {
-    int64_t index_vector_dim_index =
-        FindIndex(dim_numbers.scatter_dims_to_operand_dims(), i);
-    if (index_vector_dim_index !=
-        dim_numbers.scatter_dims_to_operand_dims_size()) {
-      TF_ASSIGN_OR_RETURN(
-          HloInstruction * component_to_concat,
-          MakeSliceHlo(index_vector, /*start_indices=*/{index_vector_dim_index},
-                       /*limit_indices=*/{index_vector_dim_index + 1},
-                       /*strides=*/{1}));
-      expanded_index_components.push_back(component_to_concat);
-    } else {
-      expanded_index_components.push_back(zero);
-    }
-  }
-
-  return MakeConcatHlo(expanded_index_components, /*dimension=*/0);
-}
-
 static absl::StatusOr<HloInstruction*> CheckIndexValidity(
     HloComputation* computation, HloInstruction* index,
     absl::Span<const int64_t> operand_dims,
@@ -301,7 +260,6 @@ static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
 absl::StatusOr<HloInstruction*> CreateScanWithIndices(
     HloComputation* parent, HloInstruction* updates, HloInstruction* indices,
     HloComputation* to_apply) {
-  // TODO(chenhao) checkings, like make sure they are of the same length
   auto updates_shape = updates->shape();
   auto indices_shape = indices->shape();
   // Get the length of the input array
@@ -425,14 +383,13 @@ HloInstruction* ExpandIndexOffsetsFromUpdateShape(
 }
 
 // For each (index, update) pair, calculate the new indices
-// TODO(chenhao) maybe could reshape the indices before the map to avoid reshape
-// for indices and mask)
 HloInstruction* ExpandIndices(HloComputation* parent, HloInstruction* indices,
                               HloInstruction* index_offsets) {
   // For each index we need to add the index_offset to the base index
   // To do that, we first broadcast the indices and index_offsets to the same
-  // shape Then we add the index_offset to the base index and flatten the result
-  // Broadcast to be (num_indices, length_of_index_offsets, length_of_indices)
+  // shape, then we add the index_offset to the base index and flatten the
+  // result Broadcast to be (num_indices, length_of_index_offsets,
+  // length_of_indices)
   auto num_indices = indices->shape().dimensions(0);
   auto num_offsets = index_offsets->shape().dimensions(0);
   auto index_length = indices->shape().dimensions(1);
@@ -539,7 +496,6 @@ absl::StatusOr<HloInstruction*> CheckValidIndices(
 
   // 2. Check last indices <= [bounds...]
   // Check if the index is OOB w.r.t. the operand dimensions and window sizes.
-  // Todo(chenhao): figure out if there is a bug here
   std::vector<int64_t> max_valid_index(operand_dims.size());
   for (int i = 0; i < operand_dims.size(); ++i) {
     max_valid_index[i] = operand_dims[i] - window_sizes[i];
@@ -629,23 +585,14 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
 
   scatter_indices = canonical_scatter_indices;
   scatter_updates = adjusted_canonical_updates;
-  // expand the indices into operand space
-  // TODO(chenhao) handle this?
-  // TF_ASSIGN_OR_RETURN(
-  //     scatter_indices,
-  //     ExpandIndexVectorIntoOperandSpace(scatter_indices, dim_numbers,
-  //     scatter_operands[0]->shape().dimensions_size()));
-  // scatter_indices = ExpandIndexVectorIntoOperandSpace(scatter_indices,
-  // dim_numbers, scatter_operands[0]->shape().dimensions_size());
 
   bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
-  // TODO(chenhao) do some checking
-  // CHECK_EQ(scatter_indices->shape().dimensions_size(), 1);
   if (has_scalar_indices) {
-    // reshape the indices to be a 2D tensor
-    // TODO(chenhao): this makes the implementation uniform, but need to check
-    // if performance is different (e.g. sorting indices directly or create a
-    // gather)
+    // Reshape the indices to be a 2D tensor
+    // This makes the implementation uniform, but causes a 10% slow down
+    // compared to direct sorting for 1D indices It can be further optimized
+    // here by removing the gather and handling 1D and N-D indices separately,
+    // if the performance difference is huge in the e2e
     scatter_indices =
         scatter->parent()->AddInstruction(HloInstruction::CreateReshape(
             ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
