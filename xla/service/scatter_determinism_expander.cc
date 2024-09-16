@@ -298,9 +298,9 @@ static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
 }
 
 // This is work-inefficient version
-HloInstruction* CreateScanWithIndices(HloComputation* parent,
-                                      HloInstruction* updates,
-                                      HloInstruction* indices) {
+absl::StatusOr<HloInstruction*> CreateScanWithIndices(
+    HloComputation* parent, HloInstruction* updates, HloInstruction* indices,
+    HloComputation* to_apply) {
   // TODO(chenhao) checkings, like make sure they are of the same length
   auto updates_shape = updates->shape();
   auto indices_shape = indices->shape();
@@ -365,10 +365,12 @@ HloInstruction* CreateScanWithIndices(HloComputation* parent,
     auto* indices_mask = parent->AddInstruction(HloInstruction::CreateCompare(
         ShapeUtil::MakeShape(PRED, {n}), prev_indices, concatenated_indices,
         ComparisonDirection::kEq));
-    auto* summed_updates = parent->AddInstruction(HloInstruction::CreateBinary(
-        updates_shape, HloOpcode::kAdd, prev_updates, concatenated_updates));
+    std::vector<HloInstruction*> map_operands = {prev_updates,
+                                                 concatenated_updates};
+    TF_ASSIGN_OR_RETURN(HloInstruction * reduced_updates,
+                        MakeMapHlo(map_operands, to_apply));
     new_updates = parent->AddInstruction(HloInstruction::CreateTernary(
-        updates_shape, HloOpcode::kSelect, indices_mask, summed_updates,
+        updates_shape, HloOpcode::kSelect, indices_mask, reduced_updates,
         prev_updates));
     prev_updates = new_updates;
   }
@@ -475,10 +477,6 @@ HloComputation* SortingComparison(HloModule* module, const Shape key_shape,
     builder.AddInstruction(HloInstruction::CreateParameter(
         4 + 1 + i, update_shape, absl::StrCat("rhs_update_", i)));
   }
-  // builder.AddInstruction(
-  //     HloInstruction::CreateParameter(4, update_shape, "lhs_updates"));
-  // builder.AddInstruction(
-  //     HloInstruction::CreateParameter(5, update_shape, "rhs_updates"));
   builder.AddInstruction(
       HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0,
                                     param1, ComparisonDirection::kLt));
@@ -509,7 +507,7 @@ HloComputation* ReduceAndComputation(HloModule* module) {
   return module->AddEmbeddedComputation(builder.Build());
 }
 
-StatusOr<HloInstruction*> CheckValidIndices(
+absl::StatusOr<HloInstruction*> CheckValidIndices(
     HloComputation* parent, HloInstruction* indices,
     absl::Span<const int64_t> operand_dims,
     absl::Span<const int64_t> window_sizes) {
@@ -808,9 +806,6 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
         parent->AddInstruction(HloInstruction::CreateGetTupleElement(
             scatter_updates[i]->shape(), sorting, i + 2));
   }
-  // auto* sorted_updates =
-  //     parent->AddInstruction(HloInstruction::CreateGetTupleElement(
-  //         scatter_update->shape(), sorting, 2));
 
   // Use gather of sorted_indices_arg to get the sorted original indices
   GatherDimensionNumbers gather_dim_numbers;
@@ -831,8 +826,11 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   // Compute the scan
   std::vector<HloInstruction*> prefix_scan_updates(scatter_updates.size());
   for (int i = 0; i < scatter_updates.size(); i++) {
-    prefix_scan_updates[i] =
-        CreateScanWithIndices(parent, sorted_updates[i], sorted_scalar_indices);
+    TF_ASSIGN_OR_RETURN(HloComputation * to_apply,
+                        CallAndGetOutput(scatter->to_apply(), i));
+    TF_ASSIGN_OR_RETURN(prefix_scan_updates[i],
+                        CreateScanWithIndices(parent, sorted_updates[i],
+                                              sorted_scalar_indices, to_apply));
   }
 
   // Compute which unique indices to write
