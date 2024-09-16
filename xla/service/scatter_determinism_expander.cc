@@ -387,15 +387,18 @@ HloInstruction* ExpandIndexOffsetsFromUpdateShape(
   int64_t operand_rank = operand_shape.dimensions_size();
   Array2D<int> offset_tensor(num_elements, operand_rank);
 
-  // todo(chenhao) consider if we should optimize this
+  std::vector<bool> is_inserted_window_dims(operand_rank, false);
+  for (int dim : dim_num.inserted_window_dims()) {
+    is_inserted_window_dims[dim] = true;
+  }
+
   for (int64_t linear_index = 0; linear_index < num_elements; ++linear_index) {
     // Calculate the multi-dimensional index from the linear index
     int64_t current_index = linear_index;
     int inserted_window_dim_size = 0;
+    // Handle 0th to (operand_rank-2)th dimensions
     for (int i = 0; i < operand_rank - 1; ++i) {
-      if (std::find(dim_num.inserted_window_dims().begin(),
-                    dim_num.inserted_window_dims().end(),
-                    i) != dim_num.inserted_window_dims().end()) {
+      if (is_inserted_window_dims[i]) {
         inserted_window_dim_size++;
         offset_tensor(linear_index, i) = 0;
       } else {
@@ -408,9 +411,8 @@ HloInstruction* ExpandIndexOffsetsFromUpdateShape(
         current_index %= dim_size;
       }
     }
-    if (std::find(dim_num.inserted_window_dims().begin(),
-                  dim_num.inserted_window_dims().end(),
-                  operand_rank - 1) != dim_num.inserted_window_dims().end()) {
+    // Handle (operand_rank-1)th dimension
+    if (is_inserted_window_dims[operand_rank - 1]) {
       offset_tensor(linear_index, operand_rank - 1) = 0;
     } else {
       offset_tensor(linear_index, operand_rank - 1) = current_index;
@@ -870,7 +872,6 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
       sorted_expanded_indices, out_of_bound_tensor));
 
   // Finally, recreate the scatter instruction with unique indices
-  // TODO(chenhao): need to figure out how to handle multiple operands
   auto* new_scatter = parent->AddInstruction(HloInstruction::CreateScatter(
       scatter->shape(), scatter_operands, masked_indices, prefix_scan_updates,
       scatter->to_apply(), new_dim_numbers, true /*indices_are_sorted*/,
