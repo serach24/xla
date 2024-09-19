@@ -1,4 +1,4 @@
-/* Copyright 2018 The OpenXLA Authors.
+/* Copyright 2024 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,20 +13,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_SERVICE_scatter_determinism_expander_H_
-#define XLA_SERVICE_scatter_determinism_expander_H_
+#ifndef XLA_SERVICE_SCATTER_DETERMINISM_EXPANDER_H_
+#define XLA_SERVICE_SCATTER_DETERMINISM_EXPANDER_H_
 
 #include "xla/service/op_expander_pass.h"
 
 namespace xla {
 
 // This pass rewrites scatter operations into a prefix-scan based algorithm that
-// ensures the scatter esults to be determininstic. Note that the computation
+// ensures the scatter results to be determininstic. Note that the computation
 // after the expansion still contains a scatter operation, but it does not have
 // duplicated indices and hence the results are guaranteed to be deterministic.
 class ScatterDeterminismExpander : public OpExpanderPass {
  public:
-  explicit ScatterDeterminismExpander() {}
+  explicit ScatterDeterminismExpander() = default;
 
   absl::string_view name() const override {
     return "scatter_determinism_expander";
@@ -41,4 +41,4 @@ class ScatterDeterminismExpander : public OpExpanderPass {
 
 }  // namespace xla
 
-#endif  // XLA_SERVICE_scatter_determinism_expander_H_
+#endif  // XLA_SERVICE_SCATTER_DETERMINISM_EXPANDER_H_
