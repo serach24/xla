@@ -302,68 +302,6 @@ HloComputation* ReduceAndComputation(HloModule* module) {
   return module->AddEmbeddedComputation(builder.Build());
 }
 
-absl::StatusOr<HloInstruction*> CheckValidIndices(
-    HloComputation* parent, HloInstruction* indices,
-    absl::Span<const int64_t> operand_dims,
-    absl::Span<const int64_t> window_sizes) {
-  // check if indices and indices with the largest offsets are out of bound
-  // Essentially we need to do the following:
-  // 1. Check base indices >= [0, 0, 0, ...]
-  // 2. Check last indices <= [bounds...]
-  // 3. For each check, generate a same size tensor, and then do a reduce across
-  // rows to get a mask of size (n, 1)
-  auto init_reduce_value = parent->AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<bool>(true)));
-  auto reduce_computation = ReduceAndComputation(parent->parent());
-
-  // 1. Check base indices >= [0, 0, 0, ...]
-  // first generate a zero tensor of the same size as the indices
-  auto* zero_constant = parent->AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
-  auto* zero_broadcasted = parent->AddInstruction(
-      HloInstruction::CreateBroadcast(indices->shape(), zero_constant, {}));
-  auto* zero_check = parent->AddInstruction(HloInstruction::CreateCompare(
-      ShapeUtil::MakeShape(PRED, indices->shape().dimensions()), indices,
-      zero_broadcasted, ComparisonDirection::kGe));
-  // reduce each row to get a mask
-  auto* zero_check_mask = parent->AddInstruction(HloInstruction::CreateReduce(
-      ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), zero_check,
-      init_reduce_value, {1}, reduce_computation));
-
-  // 2. Check last indices <= [bounds...]
-  // Check if the index is OOB w.r.t. the operand dimensions and window sizes.
-  std::vector<int64_t> max_valid_index(operand_dims.size());
-  for (int i = 0; i < operand_dims.size(); ++i) {
-    max_valid_index[i] = operand_dims[i] - window_sizes[i];
-  }
-
-  Literal max_valid_index_literal =
-      LiteralUtil::CreateR1<int64_t>(max_valid_index);
-  if (max_valid_index_literal.shape().element_type() !=
-      indices->shape().element_type()) {
-    TF_ASSIGN_OR_RETURN(
-        max_valid_index_literal,
-        max_valid_index_literal.Convert(indices->shape().element_type()));
-  }
-  auto max_valid_index_constant = parent->AddInstruction(
-      HloInstruction::CreateConstant(std::move(max_valid_index_literal)));
-  max_valid_index_constant =
-      parent->AddInstruction(HloInstruction::CreateBroadcast(
-          indices->shape(), max_valid_index_constant, {1}));
-  auto oob_check = parent->AddInstruction(HloInstruction::CreateCompare(
-      ShapeUtil::MakeShape(PRED, indices->shape().dimensions()),
-      max_valid_index_constant, indices, ComparisonDirection::kGe));
-  auto oob_check_mask = parent->AddInstruction(HloInstruction::CreateReduce(
-      ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), oob_check,
-      init_reduce_value, {1}, reduce_computation));
-
-  // Combine the results of the two checks above.
-  auto* valid_index_mask = parent->AddInstruction(HloInstruction::CreateBinary(
-      ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}),
-      HloOpcode::kAnd, zero_check_mask, oob_check_mask));
-  return valid_index_mask;
-}
-
 absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
     HloInstruction* inst) {
   auto* scatter = Cast<HloScatterInstruction>(inst);
@@ -421,7 +359,7 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
 
   scatter_indices = canonical_scatter_indices;
   scatter_updates = adjusted_canonical_updates;
-  
+
   bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
   if (has_scalar_indices) {
     // Reshape the indices to be a 2D tensor
@@ -486,7 +424,8 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
       ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices});
 
   auto scalar_indices = parent->AddInstruction(HloInstruction::CreateReshape(
-      ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices}), scatter_indices));
+      ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices}),
+      scatter_indices));
 
   // Create [0...num_indices] tensor for permutation in sorting
   auto indices_permutation = parent->AddInstruction(HloInstruction::CreateIota(
