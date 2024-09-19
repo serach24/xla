@@ -88,6 +88,36 @@ TEST_F(ScatterDeterminismExpanderTest,
 }
 
 TEST_F(ScatterDeterminismExpanderTest,
+       EliminateScatterWithNonAssociativeCombinerND) {
+  const char* const kModuleStr = R"(
+    HloModule scatter_expander
+
+    scatter_computation {
+      arg1.173 = f32[] parameter(1)
+      arg0.172 = f32[] parameter(0)
+      ROOT add.48 = f32[] add(arg0.172, arg1.173)
+    }
+
+    ENTRY fused_computation {
+      bitcast.2335 = f32[1,4096] parameter(0)
+      pad.96 = s32[4096,2] parameter(1)
+     bitcast.2748 = f32[4096,1,1] parameter(2)
+      ROOT scatter.48 = f32[1,4096] scatter(bitcast.2335, pad.96, bitcast.2748),
+        update_window_dims={1,2}, inserted_window_dims={},
+        scatter_dims_to_operand_dims={0,1}, index_vector_dim=1,
+        to_apply=scatter_computation
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+
+  ScatterDeterminismExpander scatter_expander;
+  TF_ASSERT_OK_AND_ASSIGN(bool result,
+                          RunHloPass(&scatter_expander, module.get()));
+  EXPECT_TRUE(result);
+}
+
+TEST_F(ScatterDeterminismExpanderTest,
        DoNotEliminateScatterWithAssociativeFp32Combiner) {
   const char* const kModuleStr = R"(
     HloModule scatter_determinism_expander
