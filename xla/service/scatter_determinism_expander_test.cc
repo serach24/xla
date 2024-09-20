@@ -18,29 +18,14 @@ limitations under the License.
 #include <memory>
 #include <utility>
 
-#include "xla/hlo/ir/hlo_computation.h"
-#include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/hlo/ir/hlo_opcode.h"
-#include "xla/hlo/utils/hlo_matchers.h"
 #include "xla/literal.h"
-#include "xla/shape_util.h"
 #include "xla/test.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tsl/lib/core/status_test_util.h"
-#include "xla/types.h"
 
 namespace xla {
 namespace {
 
-class ScatterDeterminismExpanderTest : public HloTestBase {
- protected:
-  // The HLO parser changes all no layout shapes from the input to have a
-  // default layout. Clear the layout of the scatter operand for testing.
-  void ClearInstructionLayout(HloModule* module, absl::string_view inst_name) {
-    HloInstruction* inst = FindInstruction(module, inst_name);
-    inst->mutable_shape()->clear_layout();
-  }
-};
+class ScatterDeterminismExpanderTest : public HloTestBase {};
 
 TEST_F(ScatterDeterminismExpanderTest,
        DoNotEliminateScatterWithAssociativeCombiner) {
