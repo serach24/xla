@@ -64,7 +64,7 @@ static absl::StatusOr<HloInstruction*> CanonicalizeScatterIndices(
   TF_ASSIGN_OR_RETURN(
       HloInstruction * transposed_scatter_indices,
       TransposeIndexVectorDimToLast(scatter_indices, index_vector_dim));
-  if (scatter_indices->shape().rank() == index_vector_dim + 1 &&
+  if (scatter_indices->shape().rank() - 1 == index_vector_dim &&
       scatter_indices->shape().dimensions(index_vector_dim) == 1) {
     auto new_shape =
         ShapeUtil::DeleteDimension(index_vector_dim, scatter_indices->shape());
@@ -108,7 +108,7 @@ static absl::StatusOr<HloInstruction*> PermuteScatterAndWindowDims(
       permutation.push_back(i);
     }
   }
-  for (auto window_dim : update_window_dims) {
+  for (int64_t window_dim : update_window_dims) {
     permutation.push_back(window_dim);
   }
 
@@ -175,7 +175,6 @@ static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
   return scatter_loop_trip_count;
 }
 
-// This is work-inefficient version
 absl::StatusOr<HloInstruction*> CreateScanWithIndices(
     HloComputation* parent, HloInstruction* updates, HloInstruction* indices,
     HloComputation* to_apply) {
@@ -378,13 +377,8 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
 
   auto* parent = scatter->parent();
   auto num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
-  // HloInstruction* expanded_mask = nullptr;
 
-  // Check if each update is a scalar based on update shape
-  bool non_scalar_update = scatter_updates[0]->shape().dimensions_size() > 1;
   // Extract operand dimensions
-  const Shape& operand_shape = scatter_operands[0]->shape();
-  auto operand_dims = operand_shape.dimensions();
   auto updates_shape = scatter_updates[0]->shape();
   auto updates_dims = scatter_updates[0]->shape().dimensions();
   // Since we canonicalized the scatter updates, the first dim will always be
