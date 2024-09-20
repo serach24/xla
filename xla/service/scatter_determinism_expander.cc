@@ -37,11 +37,7 @@ static absl::StatusOr<HloInstruction*> TransposeIndexVectorDimToLast(
     HloInstruction* scatter_indices, int64_t index_vector_dim) {
   const Shape& scatter_indices_shape = scatter_indices->shape();
 
-  if (scatter_indices_shape.dimensions_size() == index_vector_dim) {
-    return scatter_indices;
-  }
-
-  if (index_vector_dim == (scatter_indices_shape.dimensions_size() - 1)) {
+  if (index_vector_dim >= (scatter_indices_shape.dimensions_size() - 1)) {
     return scatter_indices;
   }
 
@@ -339,7 +335,7 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   CHECK_EQ(scatter_loop_trip_count,
            canonical_scatter_indices->shape().dimensions(0));
 
-  // Canonicalize the updates, after which the size of its most-major dimension
+  // Canonicalize the updates, after which the size of their most-major dimensions
   // must be same as the while loop trip count.
   std::vector<HloInstruction*> adjusted_canonical_updates;
   adjusted_canonical_updates.reserve(scatter_updates.size());
