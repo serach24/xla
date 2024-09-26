@@ -249,28 +249,24 @@ absl::StatusOr<HloInstruction*> CreateScanWithIndices(
   return new_updates;
 }
 
-HloComputation* SortingComparison(HloModule* module, const Shape key_shape,
-                                  const Shape update_shape,
-                                  int64_t num_updates) {
+HloComputation* ScalarSortingComparison(HloModule* module,
+                                        const Shape key_shape,
+                                        const Shape update_shape,
+                                        int64_t num_updates) {
   HloComputation::Builder builder("sorting_computation");
   auto param0 = builder.AddInstruction(
       HloInstruction::CreateParameter(0, key_shape, "lhs_key"));
   auto param1 = builder.AddInstruction(
       HloInstruction::CreateParameter(1, key_shape, "rhs_key"));
-  builder.AddInstruction(
-      HloInstruction::CreateParameter(2, key_shape, "lhs_indices"));
-  builder.AddInstruction(
-      HloInstruction::CreateParameter(3, key_shape, "rhs_indices"));
   for (int i = 0; i < num_updates; ++i) {
     builder.AddInstruction(HloInstruction::CreateParameter(
-        4 + i, update_shape, absl::StrCat("lhs_update_", i)));
+        2 + i, update_shape, absl::StrCat("lhs_update_", i)));
     builder.AddInstruction(HloInstruction::CreateParameter(
-        4 + 1 + i, update_shape, absl::StrCat("rhs_update_", i)));
+        2 + 1 + i, update_shape, absl::StrCat("rhs_update_", i)));
   }
   builder.AddInstruction(
       HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0,
                                     param1, ComparisonDirection::kLt));
-
   return module->AddEmbeddedComputation(builder.Build());
 }
 
@@ -335,8 +331,8 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   CHECK_EQ(scatter_loop_trip_count,
            canonical_scatter_indices->shape().dimensions(0));
 
-  // Canonicalize the updates, after which the size of their most-major dimensions
-  // must be same as the while loop trip count.
+  // Canonicalize the updates, after which the size of their most-major
+  // dimensions must be same as the while loop trip count.
   std::vector<HloInstruction*> adjusted_canonical_updates;
   adjusted_canonical_updates.reserve(scatter_updates.size());
   for (HloInstruction* update : scatter_updates) {
@@ -421,16 +417,14 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   auto indices_permutation = parent->AddInstruction(HloInstruction::CreateIota(
       ShapeUtil::MakeShape(indices_shape.element_type(), {num_indices}), 0));
 
-  auto* comparison =
-      SortingComparison(scatter->GetModule(),
-                        ShapeUtil::MakeShape(indices_shape.element_type(), {}),
-                        ShapeUtil::MakeShape(updates_shape.element_type(), {}),
-                        scatter_updates.size());
+  auto* comparison = ScalarSortingComparison(
+      scatter->GetModule(),
+      ShapeUtil::MakeShape(indices_shape.element_type(), {}),
+      ShapeUtil::MakeShape(updates_shape.element_type(), {}),
+      scatter_updates.size());
 
-  std::vector<HloInstruction*> sort_operands = {scalar_indices,
-                                                indices_permutation};
-  std::vector<Shape> sort_shapes = {scalar_index_shape,
-                                    indices_permutation->shape()};
+  std::vector<HloInstruction*> sort_operands = {scalar_indices};
+  std::vector<Shape> sort_shapes = {scalar_index_shape};
   for (auto update : scatter_updates) {
     sort_operands.push_back(update);
     sort_shapes.push_back(update->shape());
@@ -442,36 +436,19 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   auto* sorted_scalar_indices =
       parent->AddInstruction(HloInstruction::CreateGetTupleElement(
           scalar_indices->shape(), sorting, 0));
-  auto* sorted_indices_arg =
-      parent->AddInstruction(HloInstruction::CreateGetTupleElement(
-          indices_permutation->shape(), sorting, 1));
-  sorted_indices_arg = parent->AddInstruction(HloInstruction::CreateReshape(
-      ShapeUtil::MakeShape(sorted_indices_arg->shape().element_type(),
-                           {num_indices, 1}),
-      sorted_indices_arg));
 
   std::vector<HloInstruction*> sorted_updates(scatter_updates.size());
   for (int i = 0; i < scatter_updates.size(); i++) {
     sorted_updates[i] =
         parent->AddInstruction(HloInstruction::CreateGetTupleElement(
-            scatter_updates[i]->shape(), sorting, i + 2));
+            scatter_updates[i]->shape(), sorting, i + 1));
   }
 
-  // Use gather of sorted_indices_arg to get the sorted original indices
-  GatherDimensionNumbers gather_dim_numbers;
-  gather_dim_numbers.add_offset_dims(
-      1);  // Preserving the inner dimension (columns)
-  gather_dim_numbers.add_start_index_map(
-      0);  // Mapping start_indices to the first dimension of the operand
-  gather_dim_numbers.add_collapsed_slice_dims(0);
-  gather_dim_numbers.set_index_vector_dim(1);
-  std::vector<int64_t> slice_sizes = {1,
-                                      scatter_indices->shape().dimensions(1)};
-  auto* sorted_expanded_indices =
-      parent->AddInstruction(HloInstruction::CreateGather(
-          scatter_indices->shape(), scatter_indices, sorted_indices_arg,
-          gather_dim_numbers, slice_sizes,
-          /*indices_are_sorted=*/true));
+  auto sorted_expanded_indices =
+      parent->AddInstruction(HloInstruction::CreateReshape(
+          ShapeUtil::MakeShape(sorted_scalar_indices->shape().element_type(),
+                               {num_indices, 1}),
+          sorted_scalar_indices));
 
   // Compute the scan
   std::vector<HloInstruction*> prefix_scan_updates(scatter_updates.size());
