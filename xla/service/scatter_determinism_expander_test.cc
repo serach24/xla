@@ -156,6 +156,111 @@ TEST_F(ScatterDeterminismExpanderTest, ScatterAddCorrectnessTest) {
   EXPECT_EQ(actual_result, expected_result);
 }
 
+TEST_F(ScatterDeterminismExpanderTest, ScatterAddHloVerficationTest) {
+  const char* const kModuleStr = R"(
+    HloModule scatter_determinism_expander
+
+    scatter_computation {
+      arg1.173 = f32[] parameter(1)
+      arg0.172 = f32[] parameter(0)
+      ROOT add.48 = f32[] add(arg0.172, arg1.173)
+    }
+
+    ENTRY scatter_add_computation {
+      operand = f32[2] constant({0, 0})
+      indices = s32[3,1] constant({{0}, {1}, {1}})
+      updates = f32[3] constant({2, 1, 5})
+      ROOT scatter.48 = f32[2] scatter(operand, indices, updates),
+        update_window_dims={}, inserted_window_dims={0},
+        scatter_dims_to_operand_dims={0}, index_vector_dim=1,
+        to_apply=scatter_computation
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+
+  ScatterDeterminismExpander scatter_determinism_expander;
+  TF_ASSERT_OK_AND_ASSIGN(
+      bool result, RunHloPass(&scatter_determinism_expander, module.get()));
+
+  EXPECT_TRUE(result);
+
+  const char* const kExpectedHloString =
+      R"(HloModule scatter_determinism_expander, entry_computation_layout={()->f32[2]{0}}
+
+%sorting_computation (lhs_key: s32[], rhs_key: s32[], lhs_update_0: f32[], rhs_update_0: f32[]) -> pred[] {
+  %lhs_update_0 = f32[] parameter(2)
+  %rhs_update_0 = f32[] parameter(3)
+  %lhs_key = s32[] parameter(0)
+  %rhs_key = s32[] parameter(1)
+  ROOT %compare = pred[] compare(s32[] %lhs_key, s32[] %rhs_key), direction=LT
+}
+
+%scatter_computation (arg0.172: f32[], arg1.173: f32[]) -> f32[] {
+  %arg0.172 = f32[] parameter(0)
+  %arg1.173 = f32[] parameter(1)
+  ROOT %add.48 = f32[] add(f32[] %arg0.172, f32[] %arg1.173)
+}
+
+ENTRY %scatter_add_computation () -> f32[2] {
+  %indices = s32[3,1]{1,0} constant({ {0}, {1}, {1} })
+  %reshape = s32[3]{0} reshape(s32[3,1]{1,0} %indices)
+  %constant = s64[1]{0} constant({2})
+  %convert = s32[1]{0} convert(s64[1]{0} %constant)
+  %broadcast = s32[3,1]{1,0} broadcast(s32[1]{0} %convert), dimensions={1}
+  %iota = s32[3]{0} iota(), iota_dimension=0
+  %operand = f32[2]{0} constant({0, 0})
+  %reshape.1 = s32[3]{0} reshape(s32[3,1]{1,0} %indices)
+  %reshape.3 = s32[3,1]{1,0} reshape(s32[3]{0} %reshape.1)
+  %reshape.4 = s32[3]{0} reshape(s32[3,1]{1,0} %reshape.3)
+  %updates = f32[3]{0} constant({2, 1, 5})
+  %transpose = f32[3]{0} transpose(f32[3]{0} %updates), dimensions={0}
+  %reshape.2 = f32[3]{0} reshape(f32[3]{0} %transpose)
+  %sort = (s32[3]{0}, f32[3]{0}) sort(s32[3]{0} %reshape.4, f32[3]{0} %reshape.2), dimensions={0}, to_apply=%sorting_computation
+  %get-tuple-element = s32[3]{0} get-tuple-element((s32[3]{0}, f32[3]{0}) %sort), index=0
+  %slice.4 = s32[2]{0} slice(s32[3]{0} %get-tuple-element), slice={[0:2]}
+  %slice.5 = s32[2]{0} slice(s32[3]{0} %get-tuple-element), slice={[1:3]}
+  %compare.3 = pred[2]{0} compare(s32[2]{0} %slice.4, s32[2]{0} %slice.5), direction=NE
+  %constant.5 = pred[] constant(true)
+  %broadcast.6 = pred[1]{0} broadcast(pred[] %constant.5), dimensions={}
+  %concatenate.4 = pred[3]{0} concatenate(pred[2]{0} %compare.3, pred[1]{0} %broadcast.6), dimensions={0}
+  %broadcast.7 = pred[3,1]{1,0} broadcast(pred[3]{0} %concatenate.4), dimensions={0}
+  %reshape.5 = s32[3,1]{1,0} reshape(s32[3]{0} %get-tuple-element)
+  %broadcast.1 = s32[3,1]{1,0} broadcast(s32[1]{0} %convert), dimensions={1}
+  %select.2 = s32[3,1]{1,0} select(pred[3,1]{1,0} %broadcast.7, s32[3,1]{1,0} %reshape.5, s32[3,1]{1,0} %broadcast.1)
+  %constant.4 = s32[] constant(0)
+  %broadcast.5 = s32[2]{0} broadcast(s32[] %constant.4), dimensions={}
+  %slice.3 = s32[1]{0} slice(s32[3]{0} %get-tuple-element), slice={[0:1]}
+  %concatenate.3 = s32[3]{0} concatenate(s32[2]{0} %broadcast.5, s32[1]{0} %slice.3), dimensions={0}
+  %compare.2 = pred[3]{0} compare(s32[3]{0} %get-tuple-element, s32[3]{0} %concatenate.3), direction=EQ
+  %constant.2 = s32[] constant(0)
+  %broadcast.3 = s32[1]{0} broadcast(s32[] %constant.2), dimensions={}
+  %slice.1 = s32[2]{0} slice(s32[3]{0} %get-tuple-element), slice={[0:2]}
+  %concatenate.1 = s32[3]{0} concatenate(s32[1]{0} %broadcast.3, s32[2]{0} %slice.1), dimensions={0}
+  %compare.1 = pred[3]{0} compare(s32[3]{0} %get-tuple-element, s32[3]{0} %concatenate.1), direction=EQ
+  %get-tuple-element.1 = f32[3]{0} get-tuple-element((s32[3]{0}, f32[3]{0}) %sort), index=1
+  %constant.1 = f32[] constant(0)
+  %broadcast.2 = f32[1]{0} broadcast(f32[] %constant.1), dimensions={}
+  %slice = f32[2]{0} slice(f32[3]{0} %get-tuple-element.1), slice={[0:2]}
+  %concatenate = f32[3]{0} concatenate(f32[1]{0} %broadcast.2, f32[2]{0} %slice), dimensions={0}
+  %map = f32[3]{0} map(f32[3]{0} %get-tuple-element.1, f32[3]{0} %concatenate), dimensions={0}, to_apply=%scatter_computation
+  %select = f32[3]{0} select(pred[3]{0} %compare.1, f32[3]{0} %map, f32[3]{0} %get-tuple-element.1)
+  %constant.3 = f32[] constant(0)
+  %broadcast.4 = f32[2]{0} broadcast(f32[] %constant.3), dimensions={}
+  %slice.2 = f32[1]{0} slice(f32[3]{0} %select), slice={[0:1]}
+  %concatenate.2 = f32[3]{0} concatenate(f32[2]{0} %broadcast.4, f32[1]{0} %slice.2), dimensions={0}
+  %map.1 = f32[3]{0} map(f32[3]{0} %select, f32[3]{0} %concatenate.2), dimensions={0}, to_apply=%scatter_computation
+  %select.1 = f32[3]{0} select(pred[3]{0} %compare.2, f32[3]{0} %map.1, f32[3]{0} %select)
+  ROOT %scatter.48 = f32[2]{0} scatter(f32[2]{0} %operand, s32[3,1]{1,0} %select.2, f32[3]{0} %select.1), update_window_dims={}, inserted_window_dims={0}, scatter_dims_to_operand_dims={0}, index_vector_dim=1, indices_are_sorted=true, unique_indices=true, to_apply=%scatter_computation
+}
+
+)";
+
+  // Dump the resulting HLO module to a string
+  std::string actual_hlo_string = module->ToString();
+  EXPECT_EQ(actual_hlo_string, kExpectedHloString);
+}
+
 TEST_F(ScatterDeterminismExpanderTest, ScatterAddOutOfBoundCorrectnessTest) {
   const char* const kModuleStr = R"(
     HloModule scatter_determinism_expander
