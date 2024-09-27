@@ -43,7 +43,7 @@ static absl::StatusOr<HloInstruction*> TransposeIndexVectorDimToLast(
 
   std::vector<int64_t> permutation;
   permutation.reserve(scatter_indices_shape.dimensions_size());
-  for (int64_t i = 0, e = scatter_indices_shape.dimensions_size(); i < e; i++) {
+  for (int64_t i = 0; i < scatter_indices_shape.dimensions_size(); i++) {
     if (i != index_vector_dim) {
       permutation.push_back(i);
     }
@@ -80,13 +80,12 @@ static absl::StatusOr<HloInstruction*> CanonicalizeScatterIndices(
   const Shape& shape = transposed_scatter_indices->shape();
   if (shape.dimensions_size() == index_dims_in_scatter_indices) {
     return PrependDegenerateDims(transposed_scatter_indices, 1);
-  } else {
-    // Collapse all but the dimensions (0 or 1) in scatter_indices containing
-    // the index vectors.
-    return CollapseFirstNDims(
-        transposed_scatter_indices,
-        shape.dimensions_size() - index_dims_in_scatter_indices);
   }
+  // Collapse all but the dimensions (0 or 1) in scatter_indices containing
+  // the index vectors.
+  return CollapseFirstNDims(
+      transposed_scatter_indices,
+      shape.dimensions_size() - index_dims_in_scatter_indices);
 }
 
 // Permutes the `updates` tensor such that all the scatter dims appear in the
@@ -174,36 +173,36 @@ static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
 absl::StatusOr<HloInstruction*> CreateScanWithIndices(
     HloComputation* parent, HloInstruction* updates, HloInstruction* indices,
     HloComputation* to_apply) {
-  auto updates_shape = updates->shape();
-  auto indices_shape = indices->shape();
+  const Shape& updates_shape = updates->shape();
+  const Shape& indices_shape = indices->shape();
   // Get the length of the input array
-  int64_t n = updates_shape.dimensions(0);
+  int64_t num_updates = updates_shape.dimensions(0);
 
   // Calculate the number of iterations needed (log_2(n))
-  int64_t log_n = static_cast<int64_t>(std::ceil(std::log2(n)));
+  int64_t log_n = static_cast<int64_t>(std::ceil(std::log2(num_updates)));
 
   // Placeholder for offset calculation (2^d)
   int64_t offset;
 
   // Start to traverse
-  auto* prev_updates = updates;
-  auto* prev_indices = indices;
+  HloInstruction* prev_updates = updates;
+  HloInstruction* prev_indices = indices;
   HloInstruction* new_updates = nullptr;
 
   std::vector<int64_t> start_indices = {0};
   std::vector<int64_t> strides = {1};
 
-  for (int64_t d = 0; d < log_n; ++d) {
-    offset = 1 << d;
-    std::vector<int64_t> end_indices = {n - offset};
+  for (int64_t iteration = 0; iteration < log_n; ++iteration) {
+    offset = 1 << iteration;
+    std::vector<int64_t> end_indices = {num_updates - offset};
 
-    auto shifted_updates_shape =
-        ShapeUtil::MakeShape(updates_shape.element_type(), {n - offset});
+    auto shifted_updates_shape = ShapeUtil::MakeShape(
+        updates_shape.element_type(), {num_updates - offset});
     auto padding_updates_shape =
         ShapeUtil::MakeShape(updates_shape.element_type(), {offset});
 
-    auto shifted_indices_shape =
-        ShapeUtil::MakeShape(indices_shape.element_type(), {n - offset});
+    auto shifted_indices_shape = ShapeUtil::MakeShape(
+        indices_shape.element_type(), {num_updates - offset});
     auto padding_indices_shape =
         ShapeUtil::MakeShape(indices_shape.element_type(), {offset});
 
@@ -235,8 +234,8 @@ absl::StatusOr<HloInstruction*> CreateScanWithIndices(
             indices_shape, {padding_indices, shifted_indices}, 0));
 
     auto* indices_mask = parent->AddInstruction(HloInstruction::CreateCompare(
-        ShapeUtil::MakeShape(PRED, {n}), prev_indices, concatenated_indices,
-        ComparisonDirection::kEq));
+        ShapeUtil::MakeShape(PRED, {num_updates}), prev_indices,
+        concatenated_indices, ComparisonDirection::kEq));
     std::vector<HloInstruction*> map_operands = {prev_updates,
                                                  concatenated_updates};
     TF_ASSIGN_OR_RETURN(HloInstruction * reduced_updates,
@@ -249,6 +248,7 @@ absl::StatusOr<HloInstruction*> CreateScanWithIndices(
   return new_updates;
 }
 
+// Computation for sorting the scalar scatter indices and updates together
 HloComputation* ScalarSortingComparison(HloModule* module,
                                         const Shape key_shape,
                                         const Shape update_shape,
@@ -258,11 +258,14 @@ HloComputation* ScalarSortingComparison(HloModule* module,
       HloInstruction::CreateParameter(0, key_shape, "lhs_key"));
   auto param1 = builder.AddInstruction(
       HloInstruction::CreateParameter(1, key_shape, "rhs_key"));
+  const int kExistingParams = 2;
   for (int i = 0; i < num_updates; ++i) {
-    builder.AddInstruction(HloInstruction::CreateParameter(
-        2 + i, update_shape, absl::StrCat("lhs_update_", i)));
-    builder.AddInstruction(HloInstruction::CreateParameter(
-        2 + 1 + i, update_shape, absl::StrCat("rhs_update_", i)));
+    builder.AddInstruction(
+        HloInstruction::CreateParameter(kExistingParams + i, update_shape,
+                                        absl::StrFormat("lhs_update_%d", i)));
+    builder.AddInstruction(
+        HloInstruction::CreateParameter(kExistingParams + 1 + i, update_shape,
+                                        absl::StrFormat("rhs_update_%d", i)));
   }
   builder.AddInstruction(
       HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), param0,
@@ -317,6 +320,7 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   // should be the number of indices we should scatter into the operand.
   int64_t scatter_loop_trip_count = ScatterTripCount(scatter);
   if (!IsInt32(scatter_loop_trip_count)) {
+    // 2147483647 is the maximum value for a 32-bit signed integer (INT32_MAX).
     return Unimplemented(
         "Scatter operations with more than 2147483647 scatter indices are not "
         "supported. This error occurred for %s.",
@@ -354,10 +358,6 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
   if (has_scalar_indices) {
     // Reshape the indices to be a 2D tensor
-    // This makes the implementation uniform, but causes a 10% slow down
-    // compared to direct sorting for 1D indices It can be further optimized
-    // here by removing the gather and handling 1D and N-D indices separately,
-    // if the performance difference is huge in the e2e
     scatter_indices =
         scatter->parent()->AddInstruction(HloInstruction::CreateReshape(
             ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
@@ -365,13 +365,13 @@ absl::StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
             scatter_indices));
   }
 
-  auto index_length = scatter_indices->shape().dimensions(1);
+  int64_t index_length = scatter_indices->shape().dimensions(1);
 
-  auto* parent = scatter->parent();
-  auto num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
+  HloComputation* parent = scatter->parent();
+  int64_t num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
 
   // Extract operand dimensions
-  auto updates_shape = scatter_updates[0]->shape();
+  const Shape& updates_shape = scatter_updates[0]->shape();
   auto updates_dims = scatter_updates[0]->shape().dimensions();
   // Since we canonicalized the scatter updates, the first dim will always be
   // the number of updates and the rest will be the shape of each update
