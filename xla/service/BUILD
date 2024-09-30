@@ -2540,7 +2540,7 @@ cc_library(
         "//xla:literal_util",
         "//xla/hlo/ir:hlo",
         "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/status:statusor",
+        "@tsl//tsl/platform:statusor",
     ],
 )
 
