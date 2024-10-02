@@ -2511,6 +2511,18 @@ cc_library(
     ],
 )
 
+
+cc_library(
+    name = "scatter_utils",
+    srcs = ["scatter_utils.cc"],
+    hdrs = ["scatter_utils.h"],
+    deps = [
+        ":call_inliner",
+        ":hlo_creation_utils",
+    ],
+)
+
+
 cc_library(
     name = "scatter_expander",
     srcs = ["scatter_expander.cc"],
@@ -2519,6 +2531,7 @@ cc_library(
         ":call_inliner",
         ":hlo_creation_utils",
         ":op_expander_pass",
+        ":scatter_utils",
         ":while_util",
         "//xla:literal_util",
         "//xla/hlo/ir:hlo",
@@ -2536,6 +2549,7 @@ cc_library(
         ":call_inliner",
         ":hlo_creation_utils",
         ":op_expander_pass",
+        ":scatter_utils",
         ":while_util",
         "//xla:literal_util",
         "//xla/hlo/ir:hlo",
