@@ -14,8 +14,11 @@ limitations under the License.
 ==============================================================================*/
 
 #include "xla/service/scatter_determinism_expander.h"
+#include <cstdint>
+#include <unordered_set>
 
 #include "absl/algorithm/container.h"
+#include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -83,9 +86,18 @@ static StatusOr<HloInstruction*> CanonicalizeScatterIndices(
   }
   // Collapse all but the dimensions (0 or 1) in scatter_indices containing
   // the index vectors.
-  return CollapseFirstNDims(
+  auto indices = CollapseFirstNDims(
       transposed_scatter_indices,
       shape.dimensions_size() - index_dims_in_scatter_indices);
+  bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
+  if (has_scalar_indices) {
+    scatter_indices =
+        scatter_indices->AddInstruction(HloInstruction::CreateReshape(
+            ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
+                                 {scatter_indices->shape().dimensions(0), 1}),
+            scatter_indices));
+  }
+  return scatter_indices;
 }
 
 // Permutes the `updates` tensor such that all the scatter dims appear in the
@@ -149,6 +161,7 @@ static StatusOr<std::vector<HloInstruction*>> CanonicalizeScatterUpdates(
   return adjusted_updates;
 }
 
+// Create the out-of-bound tensor for the scatter operation.
 HloInstruction* CreateOutOfBoundTensor(HloComputation* parent,
                                        HloInstruction* scatter_indices,
                                        const Shape& scatter_shape) {
@@ -200,7 +213,7 @@ static StatusOr<HloComputation*> CallAndGetOutput(HloComputation* original,
   return new_comp;
 }
 
-static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
+static int64_t ScatterCount(const HloScatterInstruction* scatter) {
   // Compute the trip count for the while loop to be used for scatter. This
   // should be the number of indices we should scatter into the operand.
   const HloInstruction* scatter_indices = scatter->scatter_indices();
@@ -296,6 +309,24 @@ static std::vector<HloInstruction*> SortIndicesAndUpdates(
   return sorted_tensors;
 }
 
+// CreateScanWithIndices performs a prefix scan operation (akin to parallel
+// prefix sum) on the updates and indices, to compute the accumulated updates in
+// log(n) time.
+//
+// Algorithm (High-level):
+// Iteration through log2(num_updates):
+//   - For each iteration, the `updates` tensor will be sliced and padded to
+//   perform shifting by `offset`.
+//   - Similarly, the `indices` tensor is also sliced and padded.
+//   - A mask is created that compares each element of shifted `indices` and
+//   original `indices` are equal (used to avoid combining updates from
+//   different indices).
+//   - The `to_apply` function is used to combine the original and shifted
+//   updates to generate a combined update tensor.
+//   - Based on the mask, the new update tensor will choose from either the
+//   combined update or the original update.
+//   - The result becomes the `new_updates`, which is then used as the
+//   input for the next iteration.
 static StatusOr<HloInstruction*> CreateScanWithIndices(
     HloComputation* parent, HloInstruction* updates, HloInstruction* indices,
     HloComputation* to_apply) {
@@ -389,110 +420,16 @@ StatusOr<std::vector<HloInstruction*>> ComputePrefixScan(
   return prefix_scans;
 }
 
-// Function to create a reduction computation for logical AND
-HloComputation* ReduceAndComputation(HloModule* module) {
-  // Create a computation builder
-  HloComputation::Builder builder("reduce_logical_and");
-
-  // Define the scalar shape for boolean operations
-  const Shape bool_shape = ShapeUtil::MakeShape(PRED, {});
-
-  // Add parameters for the reduction computation.
-  // These represent the elements to be combined (lhs and rhs).
-  HloInstruction* lhs = builder.AddInstruction(
-      HloInstruction::CreateParameter(0, bool_shape, "lhs"));
-  HloInstruction* rhs = builder.AddInstruction(
-      HloInstruction::CreateParameter(1, bool_shape, "rhs"));
-
-  // Create the logical AND operation between the two parameters
-  builder.AddInstruction(
-      HloInstruction::CreateBinary(bool_shape, HloOpcode::kAnd, lhs, rhs));
-
-  // Build and return the computation object
-  return module->AddEmbeddedComputation(builder.Build());
-}
-
-StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
-    HloInstruction* inst) {
-  auto* scatter = Cast<HloScatterInstruction>(inst);
-  auto scatter_operands = scatter->scatter_operands();
-  HloInstruction* scatter_indices = scatter->scatter_indices();
-  std::vector<HloInstruction*> scatter_updates(
-      scatter->scatter_updates().begin(), scatter->scatter_updates().end());
-  const ScatterDimensionNumbers& dim_numbers =
-      scatter->scatter_dimension_numbers();
-
-  // If the updates tensors are empty, there is no need to update the operands.
-  // The operands can be forwarded.
-  if (ShapeUtil::IsZeroElementArray(scatter_updates[0]->shape())) {
-    if (scatter_operands.size() == 1) {
-      return scatter_operands[0];
-    }
-    return scatter->parent()->AddInstruction(
-        HloInstruction::CreateTuple(scatter_operands));
-  }
-
-  // Compute the trip count for the while loop to be used for scatter. This
-  // should be the number of indices we should scatter into the operand.
-  int64_t scatter_loop_trip_count = ScatterTripCount(scatter);
-  if (!IsInt32(scatter_loop_trip_count)) {
-    // 2147483647 is the maximum value for a 32-bit signed integer (INT32_MAX).
-    return Unimplemented(
-        "Scatter operations with more than 2147483647 scatter indices are not "
-        "supported. This error occurred for %s.",
-        scatter->ToString());
-  }
-
-  // Canonicalize the scatter_indices, after which the size of its most-major
-  // dimension must be same as the while loop trip count.
-  TF_ASSIGN_OR_RETURN(scatter_indices,
-                      CanonicalizeScatterIndices(
-                          scatter_indices, dim_numbers.index_vector_dim()));
-  CHECK_EQ(scatter_loop_trip_count, scatter_indices->shape().dimensions(0));
-
-  // Canonicalize the updates, after which the size of their most-major
-  // dimensions must be same as the while loop trip count.
-  TF_ASSIGN_OR_RETURN(
-      scatter_updates,
-      CanonicalizeScatterUpdates(scatter_updates, scatter_indices, dim_numbers,
-                                 scatter_loop_trip_count));
-
-  bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1;
-  if (has_scalar_indices) {
-    scatter_indices =
-        scatter->parent()->AddInstruction(HloInstruction::CreateReshape(
-            ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
-                                 {scatter_loop_trip_count, 1}),
-            scatter_indices));
-  }
-
-  int64_t index_length = scatter_indices->shape().dimensions(1);
-
-  HloComputation* parent = scatter->parent();
-
-  auto* out_of_bound_tensor =
-      CreateOutOfBoundTensor(parent, scatter_indices, scatter->shape());
-
-  // Sort the scatter indices and updates together based on the scatter indices.
-  int64_t num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
-  std::vector<HloInstruction*> sorted_tensors = SortIndicesAndUpdates(
-      scatter_indices, scatter_updates, num_indices, scatter, parent);
-  // Extract out the sorted indices and updates
-  HloInstruction* sorted_scalar_indices = sorted_tensors[0];
-  std::vector<HloInstruction*> sorted_updates(sorted_tensors.begin() + 1,
-                                              sorted_tensors.end());
+static HloInstruction* FindLastOccurrenceIndices(
+    HloInstruction* scatter_indices, HloInstruction* sorted_scalar_indices,
+    HloInstruction* scatter, HloComputation* parent, int64_t num_indices) {
+  int64_t indices_len = sorted_scalar_indices->shape().dimensions(0);
   auto sorted_expanded_indices =
       parent->AddInstruction(HloInstruction::CreateReshape(
           ShapeUtil::MakeShape(sorted_scalar_indices->shape().element_type(),
                                {num_indices, 1}),
           sorted_scalar_indices));
 
-  TF_ASSIGN_OR_RETURN(std::vector<HloInstruction*> prefix_scan_updates,
-                      ComputePrefixScan(sorted_updates, sorted_scalar_indices,
-                                        scatter, parent));
-
-  // Compute which unique indices to write
-  int64_t indices_len = sorted_scalar_indices->shape().dimensions(0);
   auto* sorted_indices_preceding_part =
       parent->AddInstruction(HloInstruction::CreateSlice(
           ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
@@ -523,15 +460,81 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
       ShapeUtil::MakeShape(PRED, sorted_expanded_indices->shape().dimensions()),
       indices_mask, {0}));
 
+  auto* out_of_bound_tensor =
+      CreateOutOfBoundTensor(parent, scatter_indices, scatter->shape());
+
   auto* masked_indices = parent->AddInstruction(HloInstruction::CreateTernary(
       sorted_expanded_indices->shape(), HloOpcode::kSelect, indices_mask,
       sorted_expanded_indices, out_of_bound_tensor));
+  return masked_indices;
+}
+
+StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
+    HloInstruction* inst) {
+  auto* scatter = Cast<HloScatterInstruction>(inst);
+  auto scatter_operands = scatter->scatter_operands();
+  HloInstruction* scatter_indices = scatter->scatter_indices();
+  std::vector<HloInstruction*> scatter_updates(
+      scatter->scatter_updates().begin(), scatter->scatter_updates().end());
+  const ScatterDimensionNumbers& dim_numbers =
+      scatter->scatter_dimension_numbers();
+
+  // If the updates tensors are empty, there is no need to update the operands.
+  // The operands can be forwarded.
+  if (ShapeUtil::IsZeroElementArray(scatter_updates[0]->shape())) {
+    if (scatter_operands.size() == 1) {
+      return scatter_operands[0];
+    }
+    return scatter->parent()->AddInstruction(
+        HloInstruction::CreateTuple(scatter_operands));
+  }
+
+  // Compute the trip count for the while loop to be used for scatter. This
+  // should be the number of indices we should scatter into the operand.
+  int64_t scatter_indices_count = ScatterCount(scatter);
+  if (!IsInt32(scatter_indices_count)) {
+    // 2147483647 is the maximum value for a 32-bit signed integer (INT32_MAX).
+    return Unimplemented(
+        "Scatter operations with more than 2147483647 scatter indices are not "
+        "supported. This error occurred for %s.",
+        scatter->ToString());
+  }
+
+  // Canonicalize the scatter_indices, after which the size of its most-major
+  // dimension must be same as the while loop trip count.
+  TF_ASSIGN_OR_RETURN(scatter_indices,
+                      CanonicalizeScatterIndices(
+                          scatter_indices, dim_numbers.index_vector_dim()));
+  CHECK_EQ(scatter_indices_count, scatter_indices->shape().dimensions(0));
+
+  // Canonicalize the updates, after which the size of their most-major
+  // dimensions must be same as the while loop trip count.
+  TF_ASSIGN_OR_RETURN(scatter_updates, CanonicalizeScatterUpdates(
+                                           scatter_updates, scatter_indices,
+                                           dim_numbers, scatter_indices_count));
+
+  HloComputation* parent = scatter->parent();
+
+  // Sort the scatter indices and updates together based on the scatter indices.
+  int64_t num_indices = ShapeUtil::ElementsIn(scatter_updates[0]->shape());
+  std::vector<HloInstruction*> sorted_tensors = SortIndicesAndUpdates(
+      scatter_indices, scatter_updates, num_indices, scatter, parent);
+  HloInstruction* sorted_scalar_indices = sorted_tensors[0];
+  std::vector<HloInstruction*> sorted_updates(sorted_tensors.begin() + 1,
+                                              sorted_tensors.end());
+
+  TF_ASSIGN_OR_RETURN(std::vector<HloInstruction*> prefix_scan_updates,
+                      ComputePrefixScan(sorted_updates, sorted_scalar_indices,
+                                        scatter, parent));
+
+  HloInstruction* last_occurrence_indices = FindLastOccurrenceIndices(
+      scatter_indices, sorted_scalar_indices, scatter, parent, num_indices);
 
   // Finally, recreate the scatter instruction with unique indices
   auto* new_scatter = parent->AddInstruction(HloInstruction::CreateScatter(
-      scatter->shape(), scatter_operands, masked_indices, prefix_scan_updates,
-      scatter->to_apply(), dim_numbers, true /*indices_are_sorted*/,
-      true /*unique_indices*/));
+      scatter->shape(), scatter_operands, last_occurrence_indices,
+      prefix_scan_updates, scatter->to_apply(), dim_numbers,
+      true /*indices_are_sorted*/, true /*unique_indices*/));
   return new_scatter;
 }
 
@@ -568,6 +571,48 @@ bool IsDeterministic(const HloScatterInstruction* scatter) {
   return false;
 }
 
+void RecursivelyGetInputDependencies(
+    const HloInstruction* instruction,
+    std::unordered_set<const HloInstruction*>& dependencies) {
+  if (instruction->opcode() == HloOpcode::kParameter) {
+    dependencies.emplace(instruction);
+    return;
+  }
+  for (HloInstruction* operand : instruction->operands()) {
+    RecursivelyGetInputDependencies(operand, dependencies);
+  }
+}
+
+// Check if the every output of the computation only depends on the
+// corresponding operand and updates
+bool CheckOutputDependency(HloComputation* to_apply, int operand_size) {
+  HloInstruction* root = to_apply->root_instruction();
+  if (!root->shape().IsTuple()) {
+    return true;
+  }
+  CHECK_EQ(operand_size, root->operand_count());
+
+  // traverse the tuple output of the computation
+  for (int i = 0; i < operand_size; ++i) {
+    const HloInstruction* output = root->operand(i);
+    std::unordered_set<const HloInstruction*> input_dependencies;
+    RecursivelyGetInputDependencies(output, input_dependencies);
+    // The input dependencies can be at most 2
+    if (input_dependencies.size() > 2) {
+      return false;
+    }
+    if (input_dependencies.size() == 2) {
+      for (const HloInstruction* input : input_dependencies) {
+        int64_t param_number = input->parameter_number();
+        if (param_number != i && param_number != operand_size + i) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 bool ScatterDeterminismExpander::InstructionMatchesPattern(
@@ -591,7 +636,9 @@ bool ScatterDeterminismExpander::InstructionMatchesPattern(
       (updates_shape.rank() == 1 ||
        (updates_shape.rank() == 2 && updates_shape.dimensions(1) == 1));
 
-  return indices_are_1d && updates_are_1d && !IsDeterministic(scatter);
+  return indices_are_1d && updates_are_1d && !IsDeterministic(scatter) &&
+         CheckOutputDependency(scatter->to_apply(),
+                               scatter->scatter_operands().size());
 }
 
 }  // namespace xla
