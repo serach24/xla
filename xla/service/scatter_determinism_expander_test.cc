@@ -177,62 +177,62 @@ TEST_F(ScatterDeterminismExpanderTest, ScatterAddHloVerificationTest) {
   })";
 
   const char* const kExpectedPattern = R"(
-         CHECK: ENTRY %scatter_add_computation () -> f32[2] {
-         CHECK:   %indices = s32[3,1]{1,0} constant({{.*}})
-         CHECK:   %reshape = s32[3]{0} reshape(%indices)
-         CHECK:   %operand = f32[2]{0} constant({0, 0})
-         CHECK:   %reshape.1 = s32[3]{0} reshape(%indices)
-         CHECK:   %reshape.3 = s32[3,1]{1,0} reshape(%reshape.1)
-         CHECK:   %reshape.4 = s32[3]{0} reshape(%reshape.3)
-         CHECK:   %updates = f32[3]{0} constant({2, 1, 5})
-         CHECK:   %transpose = f32[3]{0} transpose(%updates), dimensions={0}
-         CHECK:   %reshape.2 = f32[3]{0} reshape(%transpose)
-         CHECK:   %sort = (s32[3]{0}, f32[3]{0}) sort(%reshape.4, %reshape.2), dimensions={0}, to_apply=%sorting_computation
-         CHECK:   %get-tuple-element = s32[3]{0} get-tuple-element(%sort), index=0
-         CHECK:   %slice.4 = s32[2]{0} slice(%get-tuple-element), slice={[0:2]}
-         CHECK:   %slice.5 = s32[2]{0} slice(%get-tuple-element), slice={[1:3]}
-         CHECK:   %compare.3 = pred[2]{0} compare(%slice.4, %slice.5), direction=NE
-         CHECK:   %constant.5 = pred[] constant(true)
-         CHECK:   %broadcast.5 = pred[1]{0} broadcast(%constant.5), dimensions={}
-         CHECK:   %concatenate.4 = pred[3]{0} concatenate(%compare.3, %broadcast.5), dimensions={0}
-         CHECK:   %broadcast.6 = pred[3,1]{1,0} broadcast(%concatenate.4), dimensions={0}
-         CHECK:   %reshape.5 = s32[3,1]{1,0} reshape(%get-tuple-element)
-         CHECK:   %constant = s64[1]{0} constant({2})
-         CHECK:   %convert = s32[1]{0} convert(%constant)
-         CHECK:   %broadcast = s32[3,1]{1,0} broadcast(%convert), dimensions={1}
-         CHECK:   %select.2 = s32[3,1]{1,0} select(%broadcast.6, %reshape.5, %broadcast)
-         CHECK:   %constant.4 = s32[] constant(0)
-         CHECK:   %broadcast.4 = s32[2]{0} broadcast(%constant.4), dimensions={}
-         CHECK:   %slice.3 = s32[1]{0} slice(%get-tuple-element), slice={[0:1]}
-         CHECK:   %concatenate.3 = s32[3]{0} concatenate(%broadcast.4, %slice.3), dimensions={0}
-         CHECK:   %compare.2 = pred[3]{0} compare(%get-tuple-element, %concatenate.3), direction=EQ
-         CHECK:   %constant.2 = s32[] constant(0)
-         CHECK:   %broadcast.2 = s32[1]{0} broadcast(%constant.2), dimensions={}
-         CHECK:   %slice.1 = s32[2]{0} slice(%get-tuple-element), slice={[0:2]}
-         CHECK:   %concatenate.1 = s32[3]{0} concatenate(%broadcast.2, %slice.1), dimensions={0}
-         CHECK:   %compare.1 = pred[3]{0} compare(%get-tuple-element, %concatenate.1), direction=EQ
-         CHECK:   %get-tuple-element.1 = f32[3]{0} get-tuple-element(%sort), index=1
-         CHECK:   %constant.1 = f32[] constant(0)
-         CHECK:   %broadcast.1 = f32[1]{0} broadcast(%constant.1), dimensions={}
-         CHECK:   %slice = f32[2]{0} slice(%get-tuple-element.1), slice={[0:2]}
-         CHECK:   %concatenate = f32[3]{0} concatenate(%broadcast.1, %slice), dimensions={0}
-         CHECK:   %map = f32[3]{0} map(%get-tuple-element.1, %concatenate), dimensions={0}, to_apply=%scatter_computation
-         CHECK:   %select = f32[3]{0} select(%compare.1, %map, %get-tuple-element.1)
-         CHECK:   %constant.3 = f32[] constant(0)
-         CHECK:   %broadcast.3 = f32[2]{0} broadcast(%constant.3), dimensions={}
-         CHECK:   %slice.2 = f32[1]{0} slice(%select), slice={[0:1]}
-         CHECK:   %concatenate.2 = f32[3]{0} concatenate(%broadcast.3, %slice.2), dimensions={0}
-         CHECK:   %map.1 = f32[3]{0} map(%select, %concatenate.2), dimensions={0}, to_apply=%scatter_computation
-         CHECK:   %select.1 = f32[3]{0} select(%compare.2, %map.1, %select)
-         CHECK:   ROOT %scatter.48 = f32[2]{0} scatter(%operand, %select.2, %select.1),
-    CHECK-SAME:       update_window_dims={},
-    CHECK-SAME:       inserted_window_dims={0},
-    CHECK-SAME:       scatter_dims_to_operand_dims={0},
-    CHECK-SAME:       index_vector_dim=1,
-    CHECK-SAME:       indices_are_sorted=true,
-    CHECK-SAME:       unique_indices=true,
-    CHECK-SAME:       to_apply=%scatter_computation
-)";
+    CHECK: ENTRY %scatter_add_computation () -> f32[2] {
+    CHECK-DAG:   %[[INDICES:.*]] = s32[3,1]{1,0} constant({ {0}, {1}, {1} })
+    CHECK-DAG:   %[[RESHAPE1:.*]] = s32[3]{0} reshape(%[[INDICES]])
+    CHECK-DAG:   %[[OPERAND:.*]] = f32[2]{0} constant({0, 0})
+    CHECK-DAG:   %[[RESHAPE2:.*]] = s32[3]{0} reshape(%[[INDICES]])
+    CHECK-DAG:   %[[RESHAPE3:.*]] = s32[3,1]{1,0} reshape(%[[RESHAPE2]])
+    CHECK-DAG:   %[[RESHAPE4:.*]] = s32[3]{0} reshape(%[[RESHAPE3]])
+    CHECK-DAG:   %[[UPDATES:.*]] = f32[3]{0} constant({2, 1, 5})
+    CHECK-DAG:   %[[TRANSPOSE:.*]] = f32[3]{0} transpose(%[[UPDATES]]), dimensions={0}
+    CHECK-DAG:   %[[RESHAPE_UPDATES:.*]] = f32[3]{0} reshape(%[[TRANSPOSE]])
+    CHECK-DAG:   %[[SORT:.*]] = (s32[3]{0}, f32[3]{0}) sort(%[[RESHAPE4]], %[[RESHAPE_UPDATES]]), dimensions={0}, to_apply=%sorting_computation
+    CHECK-DAG:   %[[GET_TUPLE_ELEMENT:.*]] = s32[3]{0} get-tuple-element(%[[SORT]]), index=0
+    CHECK-DAG:   %[[SLICE4:.*]] = s32[2]{0} slice(%[[GET_TUPLE_ELEMENT]]), slice={[0:2]}
+    CHECK-DAG:   %[[SLICE5:.*]] = s32[2]{0} slice(%[[GET_TUPLE_ELEMENT]]), slice={[1:3]}
+    CHECK-DAG:   %[[COMPARE3:.*]] = pred[2]{0} compare(%[[SLICE4]], %[[SLICE5]]), direction=NE
+    CHECK-DAG:   %[[CONSTANT4:.*]] = pred[] constant(true)
+    CHECK-DAG:   %[[BROADCAST4:.*]] = pred[1]{0} broadcast(%[[CONSTANT4]]), dimensions={}
+    CHECK-DAG:   %[[CONCAT_COMPARE4:.*]] = pred[3]{0} concatenate(%[[COMPARE3]], %[[BROADCAST4]]), dimensions={0}
+    CHECK-DAG:   %[[BROADCAST5:.*]] = pred[3,1]{1,0} broadcast(%[[CONCAT_COMPARE4]]), dimensions={0}
+    CHECK-DAG:   %[[RESHAPE5:.*]] = s32[3,1]{1,0} reshape(%[[GET_TUPLE_ELEMENT]])
+    CHECK-DAG:   %[[CONSTANT5:.*]] = s64[1]{0} constant({2})
+    CHECK-DAG:   %[[CONVERT:.*]] = s32[1]{0} convert(%[[CONSTANT5]])
+    CHECK-DAG:   %[[BROADCAST6:.*]] = s32[3,1]{1,0} broadcast(%[[CONVERT]]), dimensions={1}
+    CHECK-DAG:   %[[SELECT2:.*]] = s32[3,1]{1,0} select(%[[BROADCAST5]], %[[RESHAPE5]], %[[BROADCAST6]])
+    CHECK-DAG:   %[[CONSTANT3:.*]] = s32[] constant(0)
+    CHECK-DAG:   %[[BROADCAST3:.*]] = s32[2]{0} broadcast(%[[CONSTANT3]]), dimensions={}
+    CHECK-DAG:   %[[SLICE3:.*]] = s32[1]{0} slice(%[[GET_TUPLE_ELEMENT]]), slice={[0:1]}
+    CHECK-DAG:   %[[CONCAT3:.*]] = s32[3]{0} concatenate(%[[BROADCAST3]], %[[SLICE3]]), dimensions={0}
+    CHECK-DAG:   %[[COMPARE2:.*]] = pred[3]{0} compare(%[[GET_TUPLE_ELEMENT]], %[[CONCAT3]]), direction=EQ
+    CHECK-DAG:   %[[CONSTANT1:.*]] = s32[] constant(0)
+    CHECK-DAG:   %[[BROADCAST1:.*]] = s32[1]{0} broadcast(%[[CONSTANT1]]), dimensions={}
+    CHECK-DAG:   %[[SLICE1:.*]] = s32[2]{0} slice(%[[GET_TUPLE_ELEMENT]]), slice={[0:2]}
+    CHECK-DAG:   %[[CONCAT1:.*]] = s32[3]{0} concatenate(%[[BROADCAST1]], %[[SLICE1]]), dimensions={0}
+    CHECK-DAG:   %[[COMPARE1:.*]] = pred[3]{0} compare(%[[GET_TUPLE_ELEMENT]], %[[CONCAT1]]), direction=EQ
+    CHECK-DAG:   %[[GET_TUPLE_ELEMENT1:.*]] = f32[3]{0} get-tuple-element(%[[SORT]]), index=1
+    CHECK-DAG:   %[[CONSTANT_F32:.*]] = f32[] constant(0)
+    CHECK-DAG:   %[[BROADCAST_F32:.*]] = f32[1]{0} broadcast(%[[CONSTANT_F32]]), dimensions={}
+    CHECK-DAG:   %[[SLICE_F32:.*]] = f32[2]{0} slice(%[[GET_TUPLE_ELEMENT1]]), slice={[0:2]}
+    CHECK-DAG:   %[[CONCAT_F32:.*]] = f32[3]{0} concatenate(%[[BROADCAST_F32]], %[[SLICE_F32]]), dimensions={0}
+    CHECK-DAG:   %[[MAP:.*]] = f32[3]{0} map(%[[GET_TUPLE_ELEMENT1]], %[[CONCAT_F32]]), dimensions={0}, to_apply=%scatter_computation
+    CHECK-DAG:   %[[SELECT:.*]] = f32[3]{0} select(%[[COMPARE1]], %[[MAP]], %[[GET_TUPLE_ELEMENT1]])
+    CHECK-DAG:   %[[CONSTANT2:.*]] = f32[] constant(0)
+    CHECK-DAG:   %[[BROADCAST2:.*]] = f32[2]{0} broadcast(%[[CONSTANT2]]), dimensions={}
+    CHECK-DAG:   %[[SLICE2:.*]] = f32[1]{0} slice(%[[SELECT]]), slice={[0:1]}
+    CHECK-DAG:   %[[CONCAT2:.*]] = f32[3]{0} concatenate(%[[BROADCAST2]], %[[SLICE2]]), dimensions={0}
+    CHECK-DAG:   %[[MAP1:.*]] = f32[3]{0} map(%[[SELECT]], %[[CONCAT2]]), dimensions={0}, to_apply=%scatter_computation
+    CHECK-DAG:   %[[SELECT1:.*]] = f32[3]{0} select(%[[COMPARE2]], %[[MAP1]], %[[SELECT]])
+    CHECK-DAG: ROOT %[[SCATTER:.*]] = f32[2]{0} scatter(%[[OPERAND]], %[[SELECT2]], %[[SELECT1]]),
+    CHECK-SAME:   update_window_dims={},
+    CHECK-SAME:   inserted_window_dims={0},
+    CHECK-SAME:   scatter_dims_to_operand_dims={0},
+    CHECK-SAME:   index_vector_dim=1,
+    CHECK-SAME:   indices_are_sorted=true,
+    CHECK-SAME:   unique_indices=true,
+    CHECK-SAME:   to_apply=%scatter_computation
+  )";
 
   RunAndFilecheckHloRewrite(kModuleStr, ScatterDeterminismExpander(),
                             kExpectedPattern, nullptr /*after_pass_checks*/,
