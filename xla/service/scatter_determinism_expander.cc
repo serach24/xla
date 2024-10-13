@@ -15,7 +15,7 @@ limitations under the License.
 
 #include "xla/service/scatter_determinism_expander.h"
 #include <cstdint>
-#include <unordered_set>
+#include "absl/container/flat_hash_set.h"
 
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
@@ -384,19 +384,23 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
 }
 
 namespace {
-void RecursivelyGetInputDependencies(
-    const HloInstruction* instruction,
-    std::unordered_set<const HloInstruction*>& dependencies) {
+void RecursivelyGetInputParamNumbers(
+    const HloInstruction* instruction, std::vector<int64_t>& param_numbers,
+    absl::flat_hash_set<const HloInstruction*>& visited) {
+  if (!visited.emplace(instruction).second) {
+    return;
+  }
+
   if (instruction->opcode() == HloOpcode::kParameter) {
-    dependencies.emplace(instruction);
+    param_numbers.push_back(instruction->parameter_number());
     return;
   }
   for (HloInstruction* operand : instruction->operands()) {
-    RecursivelyGetInputDependencies(operand, dependencies);
+    RecursivelyGetInputParamNumbers(operand, param_numbers, visited);
   }
 }
 
-// Check if the every output of the computation only depends on the
+// Check if every output of the scatter computation only depends on the
 // corresponding operand and updates
 bool CheckOutputDependency(HloComputation* to_apply, int operand_size) {
   HloInstruction* root = to_apply->root_instruction();
@@ -408,18 +412,16 @@ bool CheckOutputDependency(HloComputation* to_apply, int operand_size) {
   // traverse the tuple output of the computation
   for (int i = 0; i < operand_size; ++i) {
     const HloInstruction* output = root->operand(i);
-    std::unordered_set<const HloInstruction*> input_dependencies;
-    RecursivelyGetInputDependencies(output, input_dependencies);
+    std::vector<int64_t> param_numbers;
+    absl::flat_hash_set<const HloInstruction*> visited;
+    RecursivelyGetInputParamNumbers(output, param_numbers, visited);
     // The input dependencies can be at most 2
-    if (input_dependencies.size() > 2) {
+    if (param_numbers.size() > 2) {
       return false;
     }
-    if (input_dependencies.size() == 2) {
-      for (const HloInstruction* input : input_dependencies) {
-        int64_t param_number = input->parameter_number();
-        if (param_number != i && param_number != operand_size + i) {
-          return false;
-        }
+    for (int64_t param_number : param_numbers) {
+      if (param_number != i && param_number != operand_size + i) {
+        return false;
       }
     }
   }
