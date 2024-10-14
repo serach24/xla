@@ -371,19 +371,18 @@ StatusOr<std::vector<HloInstruction*>> ComputePrefixScan(
 }
 
 static HloInstruction* FindLastOccurrenceIndices(
-    HloInstruction* scatter_indices, HloInstruction* sorted_scalar_indices,
-    HloInstruction* scatter, HloComputation* parent, int64_t num_indices, HloInstruction* out_of_bound_tensor) {  
-  int64_t indices_len = sorted_scalar_indices->shape().dimensions(0);
-  HloInstruction* sorted_indices = sorted_scalar_indices;
+    HloInstruction* sorted_indices, HloInstruction* sorted_scalar_indices,
+    HloInstruction* scatter, HloComputation* parent, int64_t num_indices,
+    HloInstruction* out_of_bound_tensor) {
+  int64_t indices_len = sorted_indices->shape().dimensions(0);
+  const PrimitiveType& indices_type = sorted_indices->shape().element_type();
   auto* sorted_indices_preceding_part =
       parent->AddInstruction(HloInstruction::CreateSlice(
-          ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
-                               {indices_len - 1}),
+          ShapeUtil::MakeShape(indices_type, {indices_len - 1}),
           sorted_scalar_indices, {0}, {indices_len - 1}, {1}));
   auto* sorted_indices_following_part =
       parent->AddInstruction(HloInstruction::CreateSlice(
-          ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
-                               {indices_len - 1}),
+          ShapeUtil::MakeShape(indices_type, {indices_len - 1}),
           sorted_scalar_indices, {1}, {indices_len}, {1}));
   auto* indices_mask_without_padding =
       parent->AddInstruction(HloInstruction::CreateCompare(
@@ -402,7 +401,7 @@ static HloInstruction* FindLastOccurrenceIndices(
 
   // Mask the indices
   indices_mask = parent->AddInstruction(HloInstruction::CreateBroadcast(
-      ShapeUtil::MakeShape(PRED, scatter_indices->shape().dimensions()),
+      ShapeUtil::MakeShape(PRED, sorted_indices->shape().dimensions()),
       indices_mask, {0}));
 
   auto* masked_indices = parent->AddInstruction(HloInstruction::CreateTernary(
@@ -601,7 +600,6 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
         scatter->ToString());
   }
 
-
   bool has_scalar_indices = scatter_indices->shape().dimensions_size() == 1 ||
                             scatter_indices->shape().dimensions(1) == 1;
   // Canonicalize the scatter_indices, after which the size of its most-major
@@ -636,12 +634,9 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   HloInstruction* out_of_bound_tensor =
       CreateOutOfBoundTensor(parent, scatter_indices, scatter->shape());
 
-
   if (non_scalar_update) {
-
     // Extract operand dimensions
     const Shape& operand_shape = scatter_operands[0]->shape();
-
 
     auto* index_offsets = ExpandIndexOffsetsFromUpdateShape(
         scatter->parent(), update_shape, dim_numbers, operand_shape);
@@ -676,7 +671,7 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
     oob_check_mask = parent->AddInstruction(HloInstruction::CreateBroadcast(
         ShapeUtil::MakeShape(PRED, scatter_indices->shape().dimensions()),
         oob_check_mask, {0}));
-    
+
     scatter_indices = parent->AddInstruction(HloInstruction::CreateTernary(
         scatter_indices->shape(), HloOpcode::kSelect, oob_check_mask,
         scatter_indices, out_of_bound_tensor));
@@ -718,20 +713,21 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
       scatter_indices, scatter_updates, num_indices, scatter, parent,
       scatter_operands[0]->shape().dimensions(), has_scalar_indices);
   HloInstruction* sorted_scalar_indices = sorted_tensors[0];
- std::vector<HloInstruction*> sorted_updates(
+  std::vector<HloInstruction*> sorted_updates(
       sorted_tensors.begin() + 1,
       sorted_tensors.begin() + 1 + scatter_updates.size());
-  HloInstruction* sorted_expanded_indices = sorted_scalar_indices;
+  HloInstruction* sorted_indices = sorted_scalar_indices;
   if (!has_scalar_indices) {
-    sorted_expanded_indices = sorted_tensors[sorted_tensors.size() - 1];
+    sorted_indices = sorted_tensors[sorted_tensors.size() - 1];
   }
 
   TF_ASSIGN_OR_RETURN(std::vector<HloInstruction*> prefix_scan_updates,
                       ComputePrefixScan(sorted_updates, sorted_scalar_indices,
                                         scatter, parent));
 
-  HloInstruction* last_occurrence_indices = FindLastOccurrenceIndices(
-      scatter_indices, sorted_scalar_indices, scatter, parent, num_indices, out_of_bound_tensor);
+  HloInstruction* last_occurrence_indices =
+      FindLastOccurrenceIndices(sorted_indices, sorted_scalar_indices, scatter,
+                                parent, num_indices, out_of_bound_tensor);
 
   // Finally, recreate the scatter instruction with unique indices
   auto* new_scatter = parent->AddInstruction(HloInstruction::CreateScatter(
@@ -791,7 +787,9 @@ bool CheckOutputDependency(HloComputation* to_apply, int operand_size) {
 bool ScatterDeterminismExpander::InstructionMatchesPattern(
     HloInstruction* inst) {
   auto* scatter = DynCast<HloScatterInstruction>(inst);
-  return (scatter != nullptr) && !IsScatterDeterministic(scatter) && CheckOutputDependency(scatter->to_apply(), scatter->scatter_operands().size());
+  return (scatter != nullptr) && !IsScatterDeterministic(scatter) &&
+         CheckOutputDependency(scatter->to_apply(),
+                               scatter->scatter_operands().size());
 }
 
 }  // namespace xla
