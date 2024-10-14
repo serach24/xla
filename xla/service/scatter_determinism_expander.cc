@@ -55,14 +55,30 @@ static StatusOr<std::vector<HloInstruction*>> CanonicalizeScatterUpdates(
   return adjusted_updates;
 }
 
-// Create the out-of-bound tensor for the scatter operation.
-HloInstruction* CreateOutOfBoundTensor(HloComputation* parent,
-                                       HloInstruction* scatter_indices,
-                                       const Shape& scatter_shape) {
+// Creates a tensor for the scatter operation based on the value of
+// is_out_of_bound.
+//
+// When is_out_of_bound is true, the tensor is filled with values representing
+// the maximum bounds of the scatter shape (out-of-bound values). This is used
+// to simulate out-of-bound conditions in the scatter operation.
+//
+// When is_out_of_bound is false, the tensor is filled with the maximum valid
+// indices (calculated as operand_dimensions - window_dimensions). This is used
+// to check whether indices are within valid bounds for non-scalar updates.
+//
+// This function is reusable for both out-of-bound tensor generation and valid
+// index checks in scatter operations with non-scalar updates.
+HloInstruction* CreateBoundTensor(
+    HloComputation* parent, HloInstruction* scatter_indices,
+    absl::Span<const int64_t> operand_dims, bool is_out_of_bound = false,
+    absl::optional<absl::Span<const int64_t>> window_sizes = absl::nullopt) {
   if (scatter_indices->shape().rank() == 1) {
-    CHECK(scatter_shape.dimensions_size() == 1);
+    CHECK(operand_dims.size() == 1);
+    int32_t value = is_out_of_bound
+                        ? operand_dims[0]
+                        : operand_dims[0] - (*window_sizes)[0];
     Array<int32_t> out_of_bound_array({scatter_indices->shape().dimensions(0)},
-                                      scatter_shape.dimensions(0));
+                                      value);
     return parent->AddInstruction(HloInstruction::CreateConstant(
         LiteralUtil::CreateFromArray(out_of_bound_array)));
   }
@@ -71,7 +87,9 @@ HloInstruction* CreateOutOfBoundTensor(HloComputation* parent,
                                      scatter_indices->shape().dimensions(1));
   for (int i = 0; i < scatter_indices->shape().dimensions(0); ++i) {
     for (int j = 0; j < scatter_indices->shape().dimensions(1); ++j) {
-      out_of_ound_array(i, j) = scatter_shape.dimensions(j);
+      out_of_ound_array(i, j) =
+          is_out_of_bound ? operand_dims[j]
+                          : operand_dims[j] - (*window_sizes)[j];
     }
   }
   return parent->AddInstruction(HloInstruction::CreateConstant(
@@ -114,22 +132,6 @@ HloInstruction* FlattenIndices(HloComputation* parent, HloInstruction* indices,
       ShapeUtil::MakeShape(indices->shape().element_type(),
                            {indices->shape().dimensions(0)}),
       flattened_indices));
-}
-
-static int64_t ScatterTripCount(const HloScatterInstruction* scatter) {
-  // Compute the trip count for the while loop to be used for scatter. This
-  // should be the number of indices we should scatter into the operand.
-  const HloInstruction* scatter_indices = scatter->scatter_indices();
-  const Shape& scatter_indices_shape = scatter_indices->shape();
-  const ScatterDimensionNumbers& dim_numbers =
-      scatter->scatter_dimension_numbers();
-  int64_t scatter_loop_trip_count = 1;
-  for (int64_t i = 0, e = scatter_indices_shape.dimensions_size(); i < e; i++) {
-    if (i != dim_numbers.index_vector_dim()) {
-      scatter_loop_trip_count *= scatter_indices_shape.dimensions(i);
-    }
-  }
-  return scatter_loop_trip_count;
 }
 
 // Computation for sorting the scalar scatter indices and updates together
@@ -462,13 +464,20 @@ HloInstruction* ExpandIndices(HloComputation* parent, HloInstruction* indices,
                               HloInstruction* index_offsets) {
   // For each index we need to add the index_offset to the base index
   // To do that, we first broadcast the indices and index_offsets to the same
-  // shape, then we add the index_offset to the base index and flatten the
+  // shape, then add the index_offset to the base index and flatten the
   // result Broadcast to be (num_indices, length_of_index_offsets,
-  // length_of_indices)
-  auto num_indices = indices->shape().dimensions(0);
-  auto num_offsets = index_offsets->shape().dimensions(0);
-  auto index_length = indices->shape().dimensions(1);
-  auto final_shape =
+  // length_of_indices).
+
+  // If the indices is scalar, return indices directly
+  if (indices->shape().dimensions_size() == 1) {
+    return indices;
+  }
+
+  int64_t num_indices = indices->shape().dimensions(0);
+  int64_t num_offsets = index_offsets->shape().dimensions(0);
+  int64_t index_length = indices->shape().dimensions(1);
+
+  Shape final_shape =
       ShapeUtil::MakeShape(indices->shape().element_type(),
                            {num_indices, num_offsets, index_length});
   auto broadcasted_indices = parent->AddInstruction(
@@ -523,38 +532,46 @@ absl::StatusOr<HloInstruction*> CheckValidIndices(
 
   // 1. Check base indices >= [0, 0, 0, ...]
   // first generate a zero tensor of the same size as the indices
+HloInstruction* zero_check_mask;
+if (indices->shape().rank() == 1) {
+  // Scalar case: Directly compare the scalar index to zero.
+  auto* zero_constant = parent->AddInstruction(
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
+  zero_check_mask = parent->AddInstruction(HloInstruction::CreateCompare(
+      ShapeUtil::MakeShape(PRED, {}), indices, zero_constant, 
+      ComparisonDirection::kGe));
+} else {
+  // Non-scalar case: Broadcast a zero tensor and compare element-wise.
   auto* zero_constant = parent->AddInstruction(
       HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
   auto* zero_broadcasted = parent->AddInstruction(
       HloInstruction::CreateBroadcast(indices->shape(), zero_constant, {}));
+  
+  // Compare each index to the zero tensor.
   auto* zero_check = parent->AddInstruction(HloInstruction::CreateCompare(
       ShapeUtil::MakeShape(PRED, indices->shape().dimensions()), indices,
       zero_broadcasted, ComparisonDirection::kGe));
-  // reduce each row to get a mask
-  auto* zero_check_mask = parent->AddInstruction(HloInstruction::CreateReduce(
+  
+  // Reduce across rows to get a mask (for multi-dimensional indices).
+  zero_check_mask = parent->AddInstruction(HloInstruction::CreateReduce(
       ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), zero_check,
       init_reduce_value, {1}, reduce_computation));
+}
+  // auto* zero_constant = parent->AddInstruction(
+  //     HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
+  // auto* zero_broadcasted = parent->AddInstruction(
+  //     HloInstruction::CreateBroadcast(indices->shape(), zero_constant, {}));
+  // auto* zero_check = parent->AddInstruction(HloInstruction::CreateCompare(
+  //     ShapeUtil::MakeShape(PRED, indices->shape().dimensions()), indices,
+  //     zero_broadcasted, ComparisonDirection::kGe));
+  // // reduce each row to get a mask
+  // auto* zero_check_mask = parent->AddInstruction(HloInstruction::CreateReduce(
+  //     ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}), zero_check,
+  //     init_reduce_value, {1}, reduce_computation));
 
   // 2. Check last indices <= [bounds...]
   // Check if the index is OOB w.r.t. the operand dimensions and window sizes.
-  std::vector<int64_t> max_valid_index(operand_dims.size());
-  for (int i = 0; i < operand_dims.size(); ++i) {
-    max_valid_index[i] = operand_dims[i] - window_sizes[i];
-  }
-
-  Literal max_valid_index_literal =
-      LiteralUtil::CreateR1<int64_t>(max_valid_index);
-  if (max_valid_index_literal.shape().element_type() !=
-      indices->shape().element_type()) {
-    TF_ASSIGN_OR_RETURN(
-        max_valid_index_literal,
-        max_valid_index_literal.Convert(indices->shape().element_type()));
-  }
-  auto max_valid_index_constant = parent->AddInstruction(
-      HloInstruction::CreateConstant(std::move(max_valid_index_literal)));
-  max_valid_index_constant =
-      parent->AddInstruction(HloInstruction::CreateBroadcast(
-          indices->shape(), max_valid_index_constant, {1}));
+  auto max_valid_index_constant = CreateBoundTensor(parent, indices, operand_dims, false, window_sizes);
   auto oob_check = parent->AddInstruction(HloInstruction::CreateCompare(
       ShapeUtil::MakeShape(PRED, indices->shape().dimensions()),
       max_valid_index_constant, indices, ComparisonDirection::kGe));
@@ -566,7 +583,9 @@ absl::StatusOr<HloInstruction*> CheckValidIndices(
   auto* valid_index_mask = parent->AddInstruction(HloInstruction::CreateBinary(
       ShapeUtil::MakeShape(PRED, {indices->shape().dimensions(0)}),
       HloOpcode::kAnd, zero_check_mask, oob_check_mask));
-  return valid_index_mask;
+  return parent->AddInstruction(HloInstruction::CreateBroadcast(
+      ShapeUtil::MakeShape(PRED, indices->shape().dimensions()), oob_check_mask,
+      {0}));
 }
 
 StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
@@ -632,7 +651,7 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
   bool non_scalar_update = scatter_updates[0]->shape().dimensions_size() > 1;
 
   HloInstruction* out_of_bound_tensor =
-      CreateOutOfBoundTensor(parent, scatter_indices, scatter->shape());
+      CreateBoundTensor(parent, scatter_indices, scatter->shape().dimensions());
 
   if (non_scalar_update) {
     // Extract operand dimensions
@@ -660,17 +679,13 @@ StatusOr<HloInstruction*> ScatterDeterminismExpander::ExpandInstruction(
         ShapeUtil::MakeShape(scatter_indices->shape().element_type(),
                              {1, scatter_indices->shape().dimensions(1)});
 
+    // if any updates are out of bound, we change the corresponding indices to
+    // be oob_tensor values
     TF_ASSIGN_OR_RETURN(
         HloInstruction * oob_check_mask,
         CheckValidIndices(scatter->parent(), scatter_indices,
                           scatter_operands[0]->shape().dimensions(),
                           actual_update_window_dims));
-
-    // if any updates are out of bound, we change the corresponding indices to
-    // be oob_tensor values
-    oob_check_mask = parent->AddInstruction(HloInstruction::CreateBroadcast(
-        ShapeUtil::MakeShape(PRED, scatter_indices->shape().dimensions()),
-        oob_check_mask, {0}));
 
     scatter_indices = parent->AddInstruction(HloInstruction::CreateTernary(
         scatter_indices->shape(), HloOpcode::kSelect, oob_check_mask,

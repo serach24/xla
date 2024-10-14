@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "xla/literal.h"
 #include "xla/test.h"
@@ -88,7 +89,7 @@ TEST_F(ScatterDeterminismExpanderTest,
 }
 
 TEST_F(ScatterDeterminismExpanderTest,
-       EliminateScatterWithNonAssociativeCombinerND) {
+       EliminateNonScalarScatterWithNonAssociativeCombiner) {
   const char* const kModuleStr = R"(
     HloModule scatter_expander
 
@@ -147,7 +148,7 @@ TEST_F(ScatterDeterminismExpanderTest,
   EXPECT_FALSE(result);
 }
 
-TEST_F(ScatterDeterminismExpanderTest, ScatterAddCorrectnessTest) {
+TEST_F(ScatterDeterminismExpanderTest, ScalarScatterAddCorrectnessTest) {
   const char* const kModuleStr = R"(
     HloModule scatter_determinism_expander
 
@@ -185,6 +186,127 @@ TEST_F(ScatterDeterminismExpanderTest, ScatterAddCorrectnessTest) {
 
   EXPECT_EQ(actual_result, expected_result);
 }
+
+TEST_F(ScatterDeterminismExpanderTest,
+       ScalarScatterAddOutOfBoundCorrectnessTest) {
+  const char* const kModuleStr = R"(
+    HloModule scatter_determinism_expander
+
+    scatter_computation {
+      arg1.173 = f32[] parameter(1)
+      arg0.172 = f32[] parameter(0)
+      ROOT add.48 = f32[] add(arg0.172, arg1.173)
+    }
+
+    ENTRY scatter_add_computation {
+      operand = f32[4] constant({0, 0, 0, 0})
+      indices = s32[7,1] constant({{0}, {1}, {5}, {4}, {1}, {1}, {2}})
+      updates = f32[7] constant({2, 1, 5, 3, 8, 7, 9})
+      ROOT scatter.48 = f32[4] scatter(operand, indices, updates),
+        update_window_dims={}, inserted_window_dims={0},
+        scatter_dims_to_operand_dims={0}, index_vector_dim=1,
+        to_apply=scatter_computation
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+
+  ScatterDeterminismExpander scatter_determinism_expander;
+  TF_ASSERT_OK_AND_ASSIGN(
+      bool result, RunHloPass(&scatter_determinism_expander, module.get()));
+
+  EXPECT_TRUE(result);
+
+  std::vector<float> expected_result = {2.0, 16.0, 9.0, 0.0};
+
+  Literal result_literal = ExecuteAndTransfer(std::move(module), {});
+
+  auto result_data = result_literal.data<float>();
+  std::vector<float> actual_result(result_data.begin(), result_data.end());
+
+  EXPECT_EQ(actual_result, expected_result);
+}
+
+TEST_F(ScatterDeterminismExpanderTest,
+       ScatterAddWithNonScalarIndexCorrectnessTest) {
+  const char* const kModuleStr = R"(
+    HloModule scatter_determinism_expander
+
+    scatter_computation {
+      arg1.173 = f32[] parameter(1)
+      arg0.172 = f32[] parameter(0)
+      ROOT add.48 = f32[] add(arg0.172, arg1.173)
+    }
+
+    ENTRY scatter_add_computation {
+      operand = f32[3, 3] constant({{0, 0, 0}, {0, 0, 0}, {0, 0, 0}})
+      indices = s32[3, 2] constant({{0, 0}, {1, 1}, {2,2}})
+      updates = f32[3] constant({2, 1, 3})
+      ROOT scatter.48 = f32[3,3] scatter(operand, indices, updates),
+        update_window_dims={}, inserted_window_dims={0, 1},
+        scatter_dims_to_operand_dims={0, 1}, index_vector_dim=1,
+        to_apply=scatter_computation
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+
+  ScatterDeterminismExpander scatter_determinism_expander;
+  TF_ASSERT_OK_AND_ASSIGN(
+      bool result, RunHloPass(&scatter_determinism_expander, module.get()));
+
+  EXPECT_TRUE(result);
+
+  std::vector<float> expected_result = {2, 0, 0, 0, 1, 0, 0, 0, 3};
+
+  Literal result_literal = ExecuteAndTransfer(std::move(module), {});
+
+  auto result_data = result_literal.data<float>();
+  std::vector<float> actual_result(result_data.begin(), result_data.end());
+
+  EXPECT_EQ(actual_result, expected_result);
+}
+
+TEST_F(ScatterDeterminismExpanderTest,
+       ScatterAddWithNonScalarUpdateOutOfBoundCorrectnessTest) {
+  const char* const kModuleStr = R"(
+    HloModule scatter_determinism_expander
+
+    scatter_computation {
+      arg1.173 = f32[] parameter(1)
+      arg0.172 = f32[] parameter(0)
+      ROOT add.48 = f32[] add(arg0.172, arg1.173)
+    }
+
+    ENTRY scatter_add_computation {
+      operand = f32[4] constant({0, 0, 0, 0})
+      indices = s32[3,1] constant({{1}, {2}, {3}})
+      updates = f32[3,2] constant({{1,2}, {4,7}, {10,13}})
+      ROOT scatter.48 = f32[4] scatter(operand, indices, updates),
+        update_window_dims={1}, inserted_window_dims={},
+        scatter_dims_to_operand_dims={0}, index_vector_dim=1,
+        to_apply=scatter_computation
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+
+  ScatterDeterminismExpander scatter_determinism_expander;
+  TF_ASSERT_OK_AND_ASSIGN(
+      bool result, RunHloPass(&scatter_determinism_expander, module.get()));
+
+  EXPECT_TRUE(result);
+
+  std::vector<float> expected_result = {0, 1, 6, 7};
+
+  Literal result_literal = ExecuteAndTransfer(std::move(module), {});
+
+  auto result_data = result_literal.data<float>();
+  std::vector<float> actual_result(result_data.begin(), result_data.end());
+
+  EXPECT_EQ(actual_result, expected_result);
+}
+
 
 TEST_F(ScatterDeterminismExpanderTest, ScatterAddHloVerificationTest) {
   const char* const kModuleStr = R"(
@@ -263,46 +385,7 @@ TEST_F(ScatterDeterminismExpanderTest, ScatterAddHloVerificationTest) {
                             kExpectedPattern);
 }
 
-TEST_F(ScatterDeterminismExpanderTest, ScatterAddOutOfBoundCorrectnessTest) {
-  const char* const kModuleStr = R"(
-    HloModule scatter_determinism_expander
-
-    scatter_computation {
-      arg1.173 = f32[] parameter(1)
-      arg0.172 = f32[] parameter(0)
-      ROOT add.48 = f32[] add(arg0.172, arg1.173)
-    }
-
-    ENTRY scatter_add_computation {
-      operand = f32[4] constant({0, 0, 0, 0})
-      indices = s32[7,1] constant({{0}, {1}, {5}, {4}, {1}, {1}, {2}})
-      updates = f32[7] constant({2, 1, 5, 3, 8, 7, 9})
-      ROOT scatter.48 = f32[4] scatter(operand, indices, updates),
-        update_window_dims={}, inserted_window_dims={0},
-        scatter_dims_to_operand_dims={0}, index_vector_dim=1,
-        to_apply=scatter_computation
-    })";
-
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
-                          ParseAndReturnVerifiedModule(kModuleStr));
-
-  ScatterDeterminismExpander scatter_determinism_expander;
-  TF_ASSERT_OK_AND_ASSIGN(
-      bool result, RunHloPass(&scatter_determinism_expander, module.get()));
-
-  EXPECT_TRUE(result);
-
-  std::vector<float> expected_result = {2.0, 16.0, 9.0, 0.0};
-
-  Literal result_literal = ExecuteAndTransfer(std::move(module), {});
-
-  auto result_data = result_literal.data<float>();
-  std::vector<float> actual_result(result_data.begin(), result_data.end());
-
-  EXPECT_EQ(actual_result, expected_result);
-}
-
-TEST_F(ScatterDeterminismExpanderTest, ScatterAddReproducibilityTest) {
+TEST_F(ScatterDeterminismExpanderTest, ScalarScatterAddReproducibilityTest) {
   const char* const kModuleStr = R"(
     HloModule scatter_determinism_expander
 
