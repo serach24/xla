@@ -104,6 +104,7 @@ limitations under the License.
 #include "xla/service/gpu/kernel_arguments.h"
 #include "xla/service/gpu/kernel_reuse_cache.h"
 #include "xla/service/gpu/kernels/custom_kernel.h"
+#include "xla/service/gpu/kernels/ptx_custom_kernel.h"
 #include "xla/service/gpu/kernels/topk_custom_kernel.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/matmul_utils.h"
@@ -968,6 +969,44 @@ absl::Status IrEmitterUnnested::EmitCuDnnThunk(
   AddThunkToThunkSequence(std::make_unique<CuDnnThunk>(
       fingerprint, Thunk::ThunkInfo::WithProfileAnnotation(instr),
       kernel_arguments.args(), dropout_seed));
+  return absl::OkStatus();
+}
+
+absl::Status IrEmitterUnnested::EmitPtxCustomCall(
+    const HloCustomCallInstruction* instr) {
+  auto backend_config = instr->backend_config<xla::gpu::DeviceKernelConfig>();
+  CHECK(backend_config.ok() &&
+        backend_config->device_kernel_type() == DeviceKernelType.PTX);
+
+  const std::string& kernel_name = instr->custom_call_target();
+  const std::string_view ptx = backend_config->device_kernel_source();
+  int num_args = instr->operand_count();
+  // se::BlockDim block_dim;
+  // se::ThreadDim thread_dim;
+  size_t shared_mem_bytes = 0;
+  LaunchDimensions launch_dimensions(4, 4);
+  se::BlockDim block_dim = launch_dimensions.block_counts();
+  se::ThreadDim thread_dim = launch_dimensions.thread_counts_per_block();
+
+  auto operands = instr->operands();
+  const auto& shape = instr->shape();
+
+  // Load TopK custom kernel.
+  TF_ASSIGN_OR_RETURN(
+      CustomKernel kernel,
+      kernel::GetPtxCustomKernel(kernel_name, ptx, num_args, block_dim,
+                                 thread_dim, shared_mem_bytes));
+
+  // Prepare kernel arguments.
+  TF_ASSIGN_OR_RETURN(
+      auto kernel_arguments,
+      KernelArguments::Create(ir_emitter_context_->buffer_assignment(), instr,
+                              operands));
+
+  auto thunk = std::make_unique<CustomKernelThunk>(
+      instr, std::move(kernel), std::move(kernel_arguments.args()));
+  AddThunkToThunkSequence(std::move(thunk));
+
   return absl::OkStatus();
 }
 
@@ -2755,6 +2794,9 @@ absl::Status IrEmitterUnnested::EmitHloInstruction(
       }
       if (IsCustomCallTofMHA(*instr) || IsCustomCallTofMHAF8(*instr)) {
         return EmitCuDnnThunk(custom_call);
+      }
+      if (IsCustomCallToCustomPTX(*instr)) {
+        return EmitPtxCustomCall(custom_call);
       }
 #endif  // GOOGLE_CUDA
       if (IsCustomCallToTopK(*instr)) {

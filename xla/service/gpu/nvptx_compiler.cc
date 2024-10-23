@@ -574,6 +574,92 @@ HloDataflowAnalysis::CanShareBuffer NVPTXCompiler::GetCanShareBuffer() const {
   return &CanShareBufferHint;
 }
 
+// Traverse the hlo_module to find all custom calls with ptx code embedded and
+// compile them.
+void AddCompiledKernelToCache(
+    CompilationCacheProto& proto, std::string fingerprint,
+    std::string kernel_name, std::string binary,
+    LaunchDimensions launch_dimensions, int64_t shmem_bytes = 0,
+    std::optional<se::ClusterDim> cluster_dim = std::nullopt) {
+  auto [it, inserted] = proto.mutable_entries()->emplace(
+      kernel_name, CompilationCacheEntryProto{});
+  CHECK(inserted) << kernel_name;
+  CompilationCacheEntryProto& proto_entry = it->second;
+  proto_entry.set_fingerprint(fingerprint);
+  LaunchDimensionsProto launch_dimensions_proto;
+  launch_dimensions_proto.set_num_blocks(launch_dimensions.num_blocks());
+  launch_dimensions_proto.set_num_threads_per_block(
+      launch_dimensions.num_threads_per_block());
+  *proto_entry.mutable_launch_dimensions() = launch_dimensions_proto;
+  if (cluster_dim.has_value()) {
+    ClusterDimProto cluster_dim_proto;
+    cluster_dim_proto.set_x(cluster_dim->x);
+    cluster_dim_proto.set_y(cluster_dim->y);
+    cluster_dim_proto.set_z(cluster_dim->z);
+    *proto_entry.mutable_cluster_dim() = cluster_dim_proto;
+  }
+  proto_entry.set_shmem_bytes(shmem_bytes);
+  proto_entry.set_binary(binary);
+}
+
+absl::Status NVPTXCompiler::CompileDeviceKernelsIfAny(
+    HloModule* hlo_module, const se::DeviceDescription& gpu_device_info,
+    const GpuCompiler::CompileOptions& options, CompilationCacheProto& proto) {
+  auto gpu_compute_capability = gpu_device_info.gpu_compute_capability();
+  auto* cuda_capability =
+      std::get_if<se::CudaComputeCapability>(&gpu_compute_capability);
+  if (cuda_capability == nullptr) {
+    return FailedPrecondition(
+        "Only CUDA GPU is supported in DeviceKernel compilation.");
+  }
+  auto hlo_module_config = hlo_module->config();
+  se::GpuAsmOpts ptxas_config =
+      PtxOptsFromDebugOptions(hlo_module_config.debug_options());
+
+  // bool cancel_if_reg_spill =
+  //     hlo_module_config.debug_options()
+  //         .xla_gpu_filter_kernels_spilling_registers_on_autotuning() &&
+  //     options.is_autotuning_compilation;
+
+  for (auto* computation : hlo_module->MakeNonfusionComputations()) {
+    for (auto* instruction : computation->instructions()) {
+      if (instruction->opcode() == HloOpcode::kCustomCall) {
+        if (IsCustomCallToCustomPTX(*instruction)) {
+          auto backend_config =
+              instruction->backend_config<xla::gpu::DeviceKernelConfig>();
+          if (!backend_config.ok()) {
+            return backend_config.status();
+          }
+          auto ptx_source = backend_config->device_kernel_source();
+          auto kernel_name = instruction->name();
+          // Use NVPTXCompiler to compile the PTX code.
+          LaunchDimensions launch_dimensions(4, 4);
+          absl::StatusOr<std::vector<uint8_t>> maybe_cubin =
+              NVPTXCompiler::CompileGpuAsmOrGetCachedResult(
+                  ptx_source, gpu_compute_capability, hlo_module_config,
+                  "(unknown)",
+                  /*relocatable=*/true, options);
+
+          // AssembleOptionsAndCompile
+          if (!maybe_cubin.ok()) {
+            return maybe_cubin.status();
+          }
+          // AddCompiledKernelToCache(proto, ptx_source, kernel_name,
+          //                            maybe_cubin.value(),launch_dimensions);
+
+          // GpuCompiler::BackendCompileResult{std::move(ptx_source),
+          // std::move(maybe_cubin.value())};
+          // se::CompileGpuAsmUsingLibNvPtxCompiler(cuda_capability->major,
+          // cuda_capability->minor, ptx_source,
+          //                                        ptxas_config,
+          //                                        cancel_if_reg_spill);
+        }
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 constexpr const uint8_t kPtxPrefix[] = {'P', 'T', 'X', ':', ' '};
 
 absl::StatusOr<GpuCompiler::BackendCompileResult>

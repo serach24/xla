@@ -165,6 +165,15 @@ bool IsCustomCallToTopK(const HloInstruction& hlo) {
          hlo.custom_call_target() == kTopKCustomCallTarget;
 }
 
+bool IsCustomCallToCustomPTX(const HloInstruction& hlo) {
+  if (hlo.opcode() != HloOpcode::kCustomCall) {
+    return false;
+  }
+  auto backend_config = hlo.backend_config<xla::gpu::DeviceKernelConfig>();
+  return backend_config.ok() && backend_config->device_kernel_type() == DeviceKernelType.PTX;
+}
+
+
 bool IsSliceWithUnitStrides(const HloInstruction* instr) {
   auto slice = DynCast<HloSliceInstruction>(instr);
   return slice && absl::c_all_of(slice->slice_strides(),

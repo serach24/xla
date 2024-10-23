@@ -96,6 +96,11 @@ class NVPTXCompiler : public GpuCompiler {
       se::GpuComputeCapability gpu_version, bool relocatable,
       const HloModule* debug_module, const CompileOptions& options) override;
 
+  absl::Status CompileDeviceKernelsIfAny(
+      HloModule* hlo_module, const se::DeviceDescription& gpu_device_info,
+      const GpuCompiler::CompileOptions& options,
+      CompilationCacheProto& proto) override;
+
   absl::StatusOr<bool> CanUseLinkModules(
       const HloModuleConfig& module_config) override;
 

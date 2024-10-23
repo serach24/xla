@@ -270,6 +270,18 @@ message CudnnfMHABackendConfig {
   int32 sliding_window_length = 24;
 }
 
+// Backend config for a fused Multi-Headed Attention (fMHA) that runs through
+// cudnn.
+message DeviceKernelConfig {
+  enum DeviceKernelType {
+    PTX = 0;
+  }
+  DeviceKernelType device_kernel_type = 1;
+  string device_kernel_source = 2;
+
+}
+
+
 // Generic backend config for XLA:GPU
 message GpuBackendConfig {
   // Specifies which operation queue the current instruction will run on.
@@ -298,6 +310,8 @@ message GpuBackendConfig {
     CudnnNormBackendConfig cudnn_norm_backend_config = 8;
 
     CudnnfMHABackendConfig cudnn_fmha_backend_config = 9;
+
+    DeviceKernelConfig device_kernel_config = 10;
   }
 
   // This attribute instructs the latency-hiding scheduler to

@@ -2234,6 +2234,13 @@ GpuCompiler::CompileToBackendResult(
                             GetCanShareBuffer(), BufferSizeBytesFunction(),
                             /*split_constants_module=*/use_cache));
 
+  if (std::holds_alternative<se::CudaComputeCapability>(
+          gpu_device_info.gpu_compute_capability())) {
+    TF_RETURN_IF_ERROR(CompileDeviceKernelsIfAny(
+        module, gpu_device_info, options,
+        compile_module_results.kernel_compilation_cache));
+  }
+
   if (user_pre_optimization_hook_) {
     user_pre_optimization_hook_(*compile_module_results.llvm_module);
     if (compile_module_results.llvm_module_constants != nullptr) {

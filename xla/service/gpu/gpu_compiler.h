@@ -237,6 +237,14 @@ class GpuCompiler : public LLVMCompiler {
       se::GpuComputeCapability gpu_version, bool relocatable,
       const HloModule* debug_module, const CompileOptions& options) = 0;
 
+  virtual absl::Status CompileDeviceKernelsIfAny(
+      HloModule* hlo_module, const se::DeviceDescription& gpu_device_info,
+      const GpuCompiler::CompileOptions& options,
+      CompilationCacheProto& proto) {
+    // return absl::OkStatus();
+    return Unimplemented("CompileDeviceKernelsIfAny is not implemented.");
+  }
+
   absl::Status PrepareHloModuleForIrEmitting(HloModule* hlo_module);
 
   virtual absl::StatusOr<std::vector<uint8_t>> LinkModules(
