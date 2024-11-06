@@ -60,13 +60,17 @@ KernelThunk::KernelThunk(
     absl::Span<const emitters::KernelArgument> kernel_arguments,
     LaunchDimensions launch_dimensions,
     std::optional<se::ClusterDim> cluster_dim, int64_t shmem_bytes,
-    std::optional<stream_executor::gpu::TmaMetadata> tma_metadata)
+    std::optional<stream_executor::gpu::TmaMetadata> tma_metadata,
+    std::optional<std::string> ptx,
+    std::optional<std::vector<uint8_t>> cubin)
     : Thunk(Kind::kKernel, std::move(thunk_info)),
       kernel_name_(std::move(kernel_name)),
       launch_dimensions_(std::move(launch_dimensions)),
       cluster_dim_(std::move(cluster_dim)),
       shmem_bytes_(shmem_bytes),
-      tma_metadata_(std::move(tma_metadata)) {
+      tma_metadata_(std::move(tma_metadata)),
+      ptx_(std::move(ptx)),
+      cubin_(std::move(cubin)) {
   args_.reserve(kernel_arguments.size());
   written_.reserve(kernel_arguments.size());
   for (const emitters::KernelArgument& kernel_argument : kernel_arguments) {
