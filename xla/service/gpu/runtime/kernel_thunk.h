@@ -95,9 +95,6 @@ class KernelThunk : public Thunk {
   int64_t shmem_bytes() const { return shmem_bytes_; }
 
  private:
-  // Buffer slices passed to the kernel as arguments.
-  std::vector<BufferAllocation::Slice> args_;
-
   // args_[i] is written iff (written_[i] == true).
   std::vector<bool> written_;
 
@@ -114,6 +111,11 @@ class KernelThunk : public Thunk {
 
   // Loaded kernels for each `StreamExecutor`.
   mutable absl::Mutex mutex_;
+
+ protected:
+  // Buffer slices passed to the kernel as arguments.
+  std::vector<BufferAllocation::Slice> args_;
+
   absl::flat_hash_map<se::StreamExecutor*, std::unique_ptr<se::Kernel>>
       kernel_cache_ ABSL_GUARDED_BY(mutex_);
 };
@@ -165,6 +167,32 @@ class CustomKernelThunk : public Thunk {
   mutable absl::Mutex mutex_;
   absl::flat_hash_map<se::StreamExecutor*, std::unique_ptr<se::Kernel>>
       kernel_cache_ ABSL_GUARDED_BY(mutex_);
+};
+
+//===----------------------------------------------------------------------===//
+// PtxCallThunk
+//===----------------------------------------------------------------------===//
+
+class PtxCallThunk : public KernelThunk {
+ public:
+  PtxCallThunk(const HloInstruction* instr, std::string kernel_name,
+               absl::Span<const KernelArgument> kernel_arguments,
+               LaunchDimensions launch_dimensions,
+               std::optional<se::ClusterDim> cluster_dim, int64_t shmem_bytes,
+               std::string_view ptx, std::vector<uint8_t> cubin);
+
+  // std::string ToString(int indent) const override;
+  absl::Status Initialize(const InitializeParams& params) override;
+  // absl::Status ExecuteOnStream(const ExecuteParams& params) override;
+
+  const std::string& ptx() const { return ptx_; }
+  const std::vector<uint8_t>& cubin() const { return cubin_; }
+
+ private:
+  // Buffer slices passed to the kernel as arguments.
+
+  std::string ptx_;
+  std::vector<uint8_t> cubin_;
 };
 
 }  // namespace gpu

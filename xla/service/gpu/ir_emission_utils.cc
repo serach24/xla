@@ -53,6 +53,7 @@ limitations under the License.
 #include "xla/literal.h"
 #include "xla/primitive_util.h"
 #include "xla/service/buffer_assignment.h"
+#include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/target_util.h"
 #include "xla/service/llvm_ir/llvm_type_conversion_util.h"
@@ -156,6 +157,11 @@ bool IsCustomCallToCusolver(const HloInstruction& hlo) {
 bool IsCustomCallToTopK(const HloInstruction& hlo) {
   return hlo.opcode() == HloOpcode::kCustomCall &&
          hlo.custom_call_target() == kTopKCustomCallTarget;
+}
+
+bool IsCustomCallToCustomPTX(const HloInstruction& hlo) {
+  return hlo.opcode() == HloOpcode::kCustomCall &&
+         hlo.custom_call_target() == "__gpu$xla.gpu.ptx";
 }
 
 bool IsSliceWithUnitStrides(const HloInstruction* instr) {

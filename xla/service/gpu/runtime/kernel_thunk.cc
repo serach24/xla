@@ -231,5 +231,33 @@ absl::Status CustomKernelThunk::ExecuteOnStream(const ExecuteParams& params) {
   }
 }
 
+//===----------------------------------------------------------------------===//
+// PtxCallThunk
+//===----------------------------------------------------------------------===//
+PtxCallThunk::PtxCallThunk(const HloInstruction* instr, std::string kernel_name,
+                           absl::Span<const KernelArgument> kernel_arguments,
+                           LaunchDimensions launch_dimensions,
+                           std::optional<se::ClusterDim> cluster_dim,
+                           int64_t shmem_bytes, std::string_view ptx,
+                           std::vector<uint8_t> cubin)
+    : KernelThunk(instr, std::move(kernel_name), kernel_arguments,
+                  launch_dimensions, cluster_dim, shmem_bytes),
+      ptx_(ptx),
+      cubin_(cubin) {}
+
+absl::Status PtxCallThunk::Initialize(const InitializeParams& params) {
+  absl::MutexLock lock(&mutex_);
+  auto it = kernel_cache_.find(params.executor);
+
+  if (kernel_cache_.end() == it) {
+    TF_ASSIGN_OR_RETURN(std::unique_ptr<se::Kernel> kernel,
+                        CreateKernel(kernel_name_, args_.size(), ptx_, cubin_,
+                                     params.executor, shmem_bytes_));
+    kernel_cache_.emplace(params.executor, std::move(kernel));
+  }
+
+  return absl::OkStatus();
+}
+
 }  // namespace gpu
 }  // namespace xla

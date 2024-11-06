@@ -315,6 +315,7 @@ cc_library(
     deps = [
         ":backend_configs_cc",
         ":cublas_cudnn",
+        ":device_kernel_call",
         ":execution_stream_assignment",
         ":gpu_asm_opts_util",
         ":gpu_conv_runner",
@@ -352,6 +353,7 @@ cc_library(
         "//xla/service/gpu/fusions:thunk_util",
         "//xla/service/gpu/fusions/triton:triton_fusion_emitter",
         "//xla/service/gpu/kernels:custom_kernel",
+        "//xla/service/gpu/kernels:ptx_custom_kernel",
         "//xla/service/gpu/kernels:topk_custom_kernel",
         "//xla/service/gpu/model:tiled_hlo_instruction_or_computation",
         "//xla/service/gpu/runtime:command_buffer_cmd",
@@ -488,6 +490,20 @@ cc_library(
         "@llvm-project//llvm:TargetParser",
         "@tsl//tsl/platform:errors",
         "@tsl//tsl/platform:statusor",
+    ],
+)
+
+
+cc_library(
+    name = "device_kernel_call",
+    srcs = if_gpu_is_configured(["device_kernel_call.cc"]),
+    hdrs = ["device_kernel_call.h"],
+    local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]),
+    deps = [
+        "@llvm-project//mlir:AsmParser",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
     ],
 )
 
