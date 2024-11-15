@@ -107,12 +107,12 @@ class KernelThunk : public Thunk {
   // The cluster dimensions used to launch the kernel.
   const std::optional<se::ClusterDim> cluster_dim_;
 
+ protected:
   int64_t shmem_bytes_;
 
   // Loaded kernels for each `StreamExecutor`.
   mutable absl::Mutex mutex_;
 
- protected:
   // Buffer slices passed to the kernel as arguments.
   std::vector<BufferAllocation::Slice> args_;
 

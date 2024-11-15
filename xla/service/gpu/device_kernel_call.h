@@ -27,6 +27,13 @@ namespace xla::gpu {
 struct PtxCall {
   std::string name;
   std::string source;
+  int32_t grid_x;
+  int32_t grid_y;
+  int32_t grid_z;
+  int32_t block_x;
+  int32_t block_y;
+  int32_t block_z;
+  size_t shared_mem;
 
   // Parse the metadata of a __gpu$xla.gpu.ptx call.
   static PtxCall Parse(std::string_view backend_config,

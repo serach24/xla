@@ -28,24 +28,27 @@ limitations under the License.
 namespace xla::gpu {
 
 PtxCall PtxCall::Parse(std::string_view backend_config,
-                             mlir::MLIRContext* mlir_context) {
+                       mlir::MLIRContext* mlir_context) {
   auto attrs = mlir::cast<mlir::DictionaryAttr>(
       mlir::parseAttribute(backend_config, mlir_context));
   auto name = attrs.getAs<mlir::StringAttr>("name").getValue().str();
   auto source = attrs.getAs<mlir::StringAttr>("source").str();
-//   auto grid_x = static_cast<int32_t>(
-//       attrs.getAs<mlir::IntegerAttr>("grid_x").getValue().getSExtValue());
-//   auto grid_y = static_cast<int32_t>(
-//       attrs.getAs<mlir::IntegerAttr>("grid_y").getValue().getSExtValue());
-//   auto grid_z = static_cast<int32_t>(
-//       attrs.getAs<mlir::IntegerAttr>("grid_z").getValue().getSExtValue());
-//   auto num_stages =
-//       attrs.getAs<mlir::IntegerAttr>("num_stages").getValue().getSExtValue();
-//   auto num_warps =
-//       attrs.getAs<mlir::IntegerAttr>("num_warps").getValue().getSExtValue();
-//   return PtxCall{std::move(name), std::move(ir), num_stages, num_warps,
-//                     grid_x,          grid_y,        grid_z};
-    return PtxCall{std::move(name), std::move(source)};
+  auto grid_x = static_cast<int32_t>(
+      attrs.getAs<mlir::IntegerAttr>("grid_x").getValue().getSExtValue());
+  auto grid_y = static_cast<int32_t>(
+      attrs.getAs<mlir::IntegerAttr>("grid_y").getValue().getSExtValue());
+  auto grid_z = static_cast<int32_t>(
+      attrs.getAs<mlir::IntegerAttr>("grid_z").getValue().getSExtValue());
+  auto block_x = static_cast<int32_t>(
+      attrs.getAs<mlir::IntegerAttr>("block_x").getValue().getSExtValue());
+  auto block_y = static_cast<int32_t>(
+      attrs.getAs<mlir::IntegerAttr>("block_y").getValue().getSExtValue());
+  auto block_z = static_cast<int32_t>(
+      attrs.getAs<mlir::IntegerAttr>("block_z").getValue().getSExtValue());
+  auto shared_mem = static_cast<int32_t>(
+      attrs.getAs<mlir::IntegerAttr>("shared_mem").getValue().getSExtValue());
+  return PtxCall{std::move(name), std::move(source), grid_x,  grid_y,
+                 grid_z,          block_x,           block_y, block_z};
 }
 
 }  // namespace xla::gpu

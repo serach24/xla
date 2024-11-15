@@ -251,7 +251,7 @@ absl::Status PtxCallThunk::Initialize(const InitializeParams& params) {
 
   if (kernel_cache_.end() == it) {
     TF_ASSIGN_OR_RETURN(std::unique_ptr<se::Kernel> kernel,
-                        CreateKernel(kernel_name_, args_.size(), ptx_, cubin_,
+                        CreateKernel(kernel_name(), args_.size(), ptx_, cubin_,
                                      params.executor, shmem_bytes_));
     kernel_cache_.emplace(params.executor, std::move(kernel));
   }

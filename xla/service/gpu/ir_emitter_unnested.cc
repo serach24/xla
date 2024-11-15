@@ -982,10 +982,11 @@ absl::Status IrEmitterUnnested::EmitPtxCustomCall(
   const std::string_view ptx = call.source;
   int num_args = instr->operand_count();
   std::optional<se::ClusterDim> cluster_dim;
-  size_t shared_mem_bytes = 0;
-  LaunchDimensions launch_dimensions(4, 4);
-  se::BlockDim block_dim = launch_dimensions.block_counts();
-  se::ThreadDim thread_dim = launch_dimensions.thread_counts_per_block();
+  size_t shared_mem_bytes = call.shared_mem;
+  stream_executor::BlockDim block_dim(call.grid_x, call.grid_y, call.grid_z);
+  stream_executor::ThreadDim thread_dim(call.block_x, call.block_y,
+                                        call.block_z);
+  LaunchDimensions launch_dimensions(block_dim, thread_dim);
 
   auto operands = instr->operands();
   const auto& shape = instr->shape();
