@@ -247,6 +247,10 @@ class GemmFusionCollector : public ConstDfsHloVisitorWithDefault {
     BackendConfigs result;
     result.reserve(keys_and_instructions.size());
     for (const auto& [_, fusion] : keys_and_instructions) {
+      // check if the fusion name contains "gemm_fusion_dot.83", if not, skip
+      // if (fusion->name().find("gemm_fusion_dot.83") == std::string::npos) {
+      //   continue;
+      // }
       TF_ASSIGN_OR_RETURN(std::vector<BackendConfig> configs,
                           impl_->GenerateConfigs(*fusion));
       result.push_back({fusion, std::move(configs)});
@@ -1041,7 +1045,14 @@ GemmFusionAutotunerImpl::CompileAll(AutotunerCompileUtil& compile_util,
                      const BackendConfig& config,
                      bool allow_filtering_kernels_spilling_registers)
       -> absl::StatusOr<std::unique_ptr<Executable>> {
+    // Check if fusion name contains "gemm_fusion_dot.83", if not, skip
+    // if (fusion->name().find("gemm_fusion_dot.83") == std::string::npos) {
+    //   return nullptr;
+    // }
+
     if (std::holds_alternative<TritonGemmConfig>(config)) {
+      tsl::profiler::ScopedAnnotation annotation(
+          "XlaAutotunerCompilation_Triton_");
       return compile_util.Compile([&](const DebugOptions& opts) {
         return TritonGemmAutotuneExtractor(
             std::get<TritonGemmConfig>(config), config_.GetDeviceDescription(),
@@ -1049,7 +1060,10 @@ GemmFusionAutotunerImpl::CompileAll(AutotunerCompileUtil& compile_util,
       });
     }
 
+
     if (std::holds_alternative<CuDnnConfig>(config)) {
+      tsl::profiler::ScopedAnnotation annotation(
+          "XlaAutotunerCompilation_CuDNN_");
       return compile_util
           .Compile([&](const DebugOptions& opts) {
             return CuDnnFusionExtractor(*fusion, opts,
@@ -1446,6 +1460,7 @@ static absl::Status ExchangeResults(KeyValueStoreInterface& key_value_store,
                                     absl::string_view fingerprint,
                                     const int shard_index,
                                     const int shard_count) {
+  tsl::profiler::ScopedAnnotation annotation("XlaAutotunerExchangeResults");
   AutotuneResults results;
   TF_RETURN_IF_ERROR(
       AutotunerUtil::SerializeAutotuneResults(&results, &keys_to_send));

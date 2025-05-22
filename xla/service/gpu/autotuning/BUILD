@@ -387,6 +387,7 @@ cc_library(
         "@tsl//tsl/platform:base64",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/platform:protobuf",
+        "@tsl//tsl/profiler/lib:scoped_annotation",
     ],
 )
 

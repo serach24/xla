@@ -50,6 +50,7 @@ limitations under the License.
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
+#include "tsl/profiler/lib/scoped_annotation.h"
 
 namespace xla {
 namespace gpu {
@@ -474,6 +475,7 @@ class CuDnnCustomCallVisitor : public DfsHloRewriteVisitor {
   }
 
   absl::Status HandleCustomCall(HloInstruction *hlo) override {
+    tsl::profiler::ScopedAnnotation annotation("XlaCuDnnCustomCallVisitorHandleCustomCall");
     if (!IsCustomCallTofMHA(*hlo) && !IsCustomCallTofMHAF8(*hlo) &&
         !IsCustomCallToBlockScaledDot(*hlo)) {
       return absl::OkStatus();

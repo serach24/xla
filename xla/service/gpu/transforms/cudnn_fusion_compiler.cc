@@ -59,6 +59,7 @@ limitations under the License.
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
+#include "tsl/profiler/lib/scoped_annotation.h"
 
 namespace xla {
 namespace gpu {
@@ -676,6 +677,7 @@ class CuDnnFusionVisitor : public DfsHloRewriteVisitor {
     VLOG(4) << "Processing " << hlo->ToString();
 
     auto compile_graph = [&]() -> absl::StatusOr<se::gpu::CudnnGraph> {
+      tsl::profiler::ScopedAnnotation annotation("XlaCuDnnFusionVisitorCompileGraph");
       TF_ASSIGN_OR_RETURN(
           se::gpu::CudnnGraph graph,
           PrepareGraph(dnn_support_, *DynCast<HloFusionInstruction>(hlo)));
@@ -715,6 +717,7 @@ class CuDnnFusionVisitor : public DfsHloRewriteVisitor {
 
     auto serialize_graph =
         [](const se::gpu::CudnnGraph& graph) -> absl::StatusOr<std::string> {
+      tsl::profiler::ScopedAnnotation annotation("XlaCuDnnFusionVisitorSerializeGraph");
       std::vector<uint8_t> serialized_graph;
       RETURN_IF_CUDNN_FRONTEND_ERROR(graph.Graph().serialize(serialized_graph));
       return std::string(reinterpret_cast<char*>(serialized_graph.data()),

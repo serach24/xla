@@ -939,6 +939,7 @@ cc_library(
         "//xla/stream_executor/cuda:cudnn_plugin",
         "@tsl//tsl/platform:errors",
         "@tsl//tsl/platform:statusor",
+        "@tsl//tsl/profiler/lib:scoped_annotation",
     ]) + ["//xla/service/gpu:matmul_indexing_utils"],
 )
 
@@ -1196,6 +1197,7 @@ cc_library(
         "//xla/stream_executor/cuda:cudnn_plugin",
         "@tsl//tsl/platform:errors",
         "@tsl//tsl/platform:statusor",
+        "@tsl//tsl/profiler/lib:scoped_annotation",
     ]) + [
         "//xla:xla_data_proto_cc",
         "//xla/tsl/protobuf:dnn_proto_cc",
