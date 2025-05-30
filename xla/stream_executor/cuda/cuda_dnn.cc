@@ -225,19 +225,6 @@ class CudnnHandle {
   cudnnHandle_t handle_;  // Not owned.
 };
 
-// RAII wrapper for temporary cuDNN handles that are used for multithreaded
-// compilation. Unlike with CudnnAccess these are not associated
-// with GPU devices and are not locked.
-class LocalCuDnnHandle {
- public:
-  explicit LocalCuDnnHandle(cudnnHandle_t handle) : handle_(handle) {}
-  ~LocalCuDnnHandle() { cudnnDestroy(handle_); }
-  cudnnHandle_t handle() { return handle_; }
-
- private:
-  cudnnHandle_t handle_;
-};
-
 // Major version is neither forward or backward compatible and therefore major
 // versions needs to match between source and library.
 //
@@ -267,6 +254,10 @@ class CudnnAccess {
   ~CudnnAccess() {
     absl::MutexLock lock(&mutex_);
     cudnnDestroy(handle_);
+
+    if (compilation_handle_) {
+      cudnnDestroy(compilation_handle_);
+    }
   }
 
   // Creates a CudnnHandle instance for stream.
@@ -299,12 +290,14 @@ class CudnnAccess {
     return CudnnHandle(executor, std::move(lock), handle_);
   }
 
-  absl::StatusOr<std::unique_ptr<LocalCuDnnHandle>> GetLocalHandle() {
-    cudnnHandle_t handle = nullptr;
-    if (cudnnCreate(&handle) != CUDNN_STATUS_SUCCESS) {
-      return absl::InternalError("Creation of local cudnn handle failed.");
+  absl::StatusOr<cudnnHandle_t> GetLocalHandle() {
+    if (!compilation_handle_) {
+      if (cudnnCreate(&compilation_handle_) != CUDNN_STATUS_SUCCESS) {
+        return absl::InternalError(
+            "Creation of compilation cudnn handle failed.");
+      }
     }
-    return std::make_unique<LocalCuDnnHandle>(handle);
+    return compilation_handle_;
   }
 
   void NotifyStreamDestroyed(Stream* stream) {
@@ -327,6 +320,9 @@ class CudnnAccess {
 
   // cuDNN library handle.
   cudnnHandle_t handle_ ABSL_GUARDED_BY(mutex_);  // Owned.
+
+  // Shared compilation handle for all threads calling GetLocalHandle()
+  cudnnHandle_t compilation_handle_ = nullptr;
 };
 
 namespace {
@@ -7477,27 +7473,29 @@ absl::StatusOr<std::unique_ptr<dnn::DnnGraph>> CudnnSupport::DeserializeGraph(
 absl::Status CudnnGraph::Prepare(dnn::DnnSupport& dnn_support,
                                  const NumericOptions& numeric_options) {
   const CudnnSupport& cudnn_support = static_cast<CudnnSupport&>(dnn_support);
-  TF_ASSIGN_OR_RETURN(auto cudnn, cudnn_support.cudnn_->GetLocalHandle());
+  TF_ASSIGN_OR_RETURN(auto cudnn_handle,
+                      cudnn_support.cudnn_->GetLocalHandle());
   RETURN_IF_CUDNN_FRONTEND_ERROR(graph_.validate());
-  RETURN_IF_CUDNN_FRONTEND_ERROR(graph_.build_operation_graph(cudnn->handle()));
+  RETURN_IF_CUDNN_FRONTEND_ERROR(graph_.build_operation_graph(cudnn_handle));
   if (numeric_options.require_determinism) {
     graph_.deselect_numeric_notes(
         {cudnn_frontend::NumericalNote_t::NONDETERMINISTIC});
   }
   RETURN_IF_CUDNN_FRONTEND_ERROR(
       graph_.create_execution_plans({cudnn_frontend::HeurMode_t::A}));
-  RETURN_CUDNN_FRONTEND_STATUS(graph_.check_support(cudnn->handle()));
+  RETURN_CUDNN_FRONTEND_STATUS(graph_.check_support(cudnn_handle));
 }
 
 absl::Status CudnnGraph::Build(dnn::DnnSupport& dnn_support,
                                const std::optional<int64_t> plan_id) {
   const CudnnSupport& cudnn_support = static_cast<CudnnSupport&>(dnn_support);
-  TF_ASSIGN_OR_RETURN(auto cudnn, cudnn_support.cudnn_->GetLocalHandle());
+  TF_ASSIGN_OR_RETURN(auto cudnn_handle,
+                      cudnn_support.cudnn_->GetLocalHandle());
   if (plan_id.has_value()) {
     RETURN_CUDNN_FRONTEND_STATUS(
-        graph_.build_plan_at_index(cudnn->handle(), *plan_id));
+        graph_.build_plan_at_index(cudnn_handle, *plan_id));
   }
-  RETURN_CUDNN_FRONTEND_STATUS(graph_.build_plans(cudnn->handle()));
+  RETURN_CUDNN_FRONTEND_STATUS(graph_.build_plans(cudnn_handle));
 }
 
 CudnnGraph::VariantPack CudnnGraph::PackOperands(
