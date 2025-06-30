@@ -628,6 +628,7 @@ absl::StatusOr<se::gpu::CudnnGraph> PrepareGraph(
     se::dnn::DnnSupport& dnn_support, const HloFusionInstruction& hlo) {
   TF_ASSIGN_OR_RETURN(std::optional<se::gpu::CudnnGraph> graph,
                       HloFusionToCuDnnGraph(hlo));
+  // tsl::profiler::ScopedAnnotation annotation("PrepareGraph");
   if (!graph.has_value()) {
     return absl::InternalError("Construction of cuDNN graph failed.");
   }

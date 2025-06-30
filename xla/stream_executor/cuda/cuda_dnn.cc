@@ -75,6 +75,7 @@ limitations under the License.
 #include "xla/tsl/protobuf/dnn.pb.h"
 #include "xla/tsl/util/env_var.h"
 #include "tsl/platform/tensor_float_32_utils.h"
+#include "tsl/profiler/lib/scoped_annotation.h"
 
 // clang-format off
 #include "third_party/gpus/cuda/include/library_types.h"
@@ -290,7 +291,8 @@ class CudnnAccess {
     return CudnnHandle(executor, std::move(lock), handle_);
   }
 
-  absl::StatusOr<cudnnHandle_t> GetLocalHandle() {
+  absl::StatusOr<cudnnHandle_t> GetCompilationHandle() {
+    tsl::profiler::ScopedAnnotation annotation("CudnnAccess::GetCompilationHandle");
     if (!compilation_handle_) {
       if (cudnnCreate(&compilation_handle_) != CUDNN_STATUS_SUCCESS) {
         return absl::InternalError(
@@ -321,7 +323,7 @@ class CudnnAccess {
   // cuDNN library handle.
   cudnnHandle_t handle_ ABSL_GUARDED_BY(mutex_);  // Owned.
 
-  // Shared compilation handle for all threads calling GetLocalHandle()
+  // Shared compilation handle for all threads calling GetCompilationHandle()
   cudnnHandle_t compilation_handle_ = nullptr;
 };
 
@@ -7474,9 +7476,16 @@ absl::Status CudnnGraph::Prepare(dnn::DnnSupport& dnn_support,
                                  const NumericOptions& numeric_options) {
   const CudnnSupport& cudnn_support = static_cast<CudnnSupport&>(dnn_support);
   TF_ASSIGN_OR_RETURN(auto cudnn_handle,
-                      cudnn_support.cudnn_->GetLocalHandle());
+                      cudnn_support.cudnn_->GetCompilationHandle());
   RETURN_IF_CUDNN_FRONTEND_ERROR(graph_.validate());
-  RETURN_IF_CUDNN_FRONTEND_ERROR(graph_.build_operation_graph(cudnn_handle));
+  // {
+  //   tsl::profiler::ScopedAnnotation annotation("CudnnGraph::cudafree");
+  //   cudaFree(0);
+  // }
+  {
+    tsl::profiler::ScopedAnnotation annotation("CudnnGraph::BuildOperationGraph");
+    RETURN_IF_CUDNN_FRONTEND_ERROR(graph_.build_operation_graph(cudnn_handle));
+  }
   if (numeric_options.require_determinism) {
     graph_.deselect_numeric_notes(
         {cudnn_frontend::NumericalNote_t::NONDETERMINISTIC});
@@ -7490,7 +7499,7 @@ absl::Status CudnnGraph::Build(dnn::DnnSupport& dnn_support,
                                const std::optional<int64_t> plan_id) {
   const CudnnSupport& cudnn_support = static_cast<CudnnSupport&>(dnn_support);
   TF_ASSIGN_OR_RETURN(auto cudnn_handle,
-                      cudnn_support.cudnn_->GetLocalHandle());
+                      cudnn_support.cudnn_->GetCompilationHandle());
   if (plan_id.has_value()) {
     RETURN_CUDNN_FRONTEND_STATUS(
         graph_.build_plan_at_index(cudnn_handle, *plan_id));

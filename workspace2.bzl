@@ -7,7 +7,7 @@ load("@bazel_skylib//lib:versions.bzl", "versions")
 load("//:tsl_workspace2.bzl", "tsl_workspace2")
 load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
 load("//third_party/dlpack:workspace.bzl", dlpack = "repo")
-
+load("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
 # Import third party repository rules. See go/tfbr-thirdparty.
 load("//third_party/FP16:workspace.bzl", FP16 = "repo")
 load("//third_party/gloo:workspace.bzl", gloo = "repo")
@@ -87,13 +87,18 @@ def _tf_repositories():
         urls = tf_mirror_urls("https://github.com/open-source-parsers/jsoncpp/archive/1.9.5.tar.gz"),
     )
 
-    tf_http_archive(
+    # tf_http_archive(
+    #     name = "cudnn_frontend_archive",
+    #     build_file = "//third_party:cudnn_frontend.BUILD",
+    #     patch_file = ["//third_party:cudnn_frontend_header_fix.patch"],
+    #     sha256 = "34dfe01057e43e799af207522aa0c863ad3177f8c1568b6e7a7e4ccf1cbff769",
+    #     strip_prefix = "cudnn-frontend-1.11.0",
+    #     urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.11.0.zip"),
+    # )
+    new_local_repository(
         name = "cudnn_frontend_archive",
         build_file = "//third_party:cudnn_frontend.BUILD",
-        patch_file = ["//third_party:cudnn_frontend_header_fix.patch"],
-        sha256 = "34dfe01057e43e799af207522aa0c863ad3177f8c1568b6e7a7e4ccf1cbff769",
-        strip_prefix = "cudnn-frontend-1.11.0",
-        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.11.0.zip"),
+        path = "/opt/cudnn_frontend",
     )
 
     tf_http_archive(

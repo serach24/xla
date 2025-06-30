@@ -455,6 +455,7 @@ cc_library(
         "//xla/tsl/platform:status",
         "//xla/tsl/platform:statusor",
         "//xla/tsl/protobuf:dnn_proto_cc",
+        "//xla/tsl/profiler/backends/cpu:annotation_stack",
         "//xla/tsl/util:env_var",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base",
@@ -477,6 +478,8 @@ cc_library(
         "@local_config_cuda//cuda:cudnn_header",  # build_cleaner: keep
         "@tsl//tsl/platform:tensor_float_32_hdr_lib",
         "@tsl//tsl/platform:tensor_float_32_utils",
+        "@tsl//tsl/profiler/lib:scoped_annotation",
+        "@tsl//tsl/profiler/lib:nvtx_utils",
     ],
     alwayslink = True,
 )

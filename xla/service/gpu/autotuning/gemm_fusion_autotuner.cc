@@ -1065,6 +1065,7 @@ GemmFusionAutotunerImpl::CompileAll(AutotunerCompileUtil& compile_util,
       -> absl::StatusOr<std::unique_ptr<Executable>> {
     tsl::profiler::TraceMe traceme("Compile");
     if (std::holds_alternative<TritonGemmConfig>(config)) {
+      tsl::profiler::ScopedAnnotation annotation("tritonCompile");
       return compile_util.Compile([&](const DebugOptions& opts) {
         return TritonGemmAutotuneExtractor(
             std::get<TritonGemmConfig>(config), config_.GetDeviceDescription(),
@@ -1073,6 +1074,7 @@ GemmFusionAutotunerImpl::CompileAll(AutotunerCompileUtil& compile_util,
     }
 
     if (std::holds_alternative<CuDnnConfig>(config)) {
+      tsl::profiler::ScopedAnnotation annotation("cudnnCompile");
       return compile_util
           .Compile([&](const DebugOptions& opts) {
             return CuDnnFusionExtractor(*fusion, opts,
