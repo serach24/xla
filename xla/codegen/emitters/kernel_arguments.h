@@ -93,6 +93,7 @@ class KernelArguments {
   // - Final argument order will be: input0, output0, input1, input2, output1
   static absl::StatusOr<KernelArguments> Create(
       const BufferAssignment& buffer_assignment,
+      const BufferAlignment& buffer_alignment,
       const HloInstruction* hlo_instruction,
       absl::Span<const HloInstruction* const> needed_operands,
       absl::Span<const int32_t> interleaved_output_indices);

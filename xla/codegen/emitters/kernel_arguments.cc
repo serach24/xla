@@ -53,7 +53,7 @@ KernelArguments::ExtractOutputArguments(
     output_arguments.emplace_back(
         KernelArgument(subshape, slice, /*written=*/true));
     return absl::OkStatus();
-      });
+      }));
   return output_arguments;
 }
 
@@ -90,12 +90,14 @@ absl::StatusOr<KernelArguments> KernelArguments::Create(
 
 absl::StatusOr<KernelArguments> KernelArguments::Create(
     const BufferAssignment& buffer_assignment,
+    const BufferAlignment& buffer_alignment,
     const HloInstruction* hlo_instruction,
     absl::Span<const HloInstruction* const> needed_operands,
     absl::Span<const int32_t> interleaved_output_indices) {
   if (interleaved_output_indices.empty()) {
-    return KernelArguments::Create(buffer_assignment, hlo_instruction,
-                                   needed_operands, /*dedup=*/false);
+    return KernelArguments::Create(buffer_assignment, buffer_alignment,
+                                   hlo_instruction, needed_operands,
+                                   /*dedup=*/false);
   }
 
   if (interleaved_output_indices.back() >=
@@ -136,7 +138,8 @@ absl::StatusOr<KernelArguments> KernelArguments::Create(
     return absl::InvalidArgumentError("Did not use all inputs/outputs");
   }
 
-  return KernelArguments(std::move(kernel_arguments), /*dedup=*/false);
+  return KernelArguments(std::move(kernel_arguments), buffer_alignment,
+                         /*dedup=*/false);
 }
 
 std::vector<KernelArgument> KernelArguments::ProcessArguments(
