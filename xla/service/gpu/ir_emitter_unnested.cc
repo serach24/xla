@@ -71,10 +71,7 @@ limitations under the License.
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
-#ifdef GOOGLE_CUDA
-#include "xla/stream_executor/cuda/cuda_asm_compiler.h"
 #include "xla/service/gpu/ptx_kernel_call.h"
-#endif  // GOOGLE_CUDA
 #include "xla/backends/gpu/codegen/fusion_emitter.h"
 #include "xla/backends/gpu/codegen/fusions.h"
 #include "xla/backends/gpu/codegen/triton/fusion_emitter.h"
@@ -155,6 +152,7 @@ limitations under the License.
 #include "xla/service/gpu/ir_emitter_nested.h"
 #include "xla/service/gpu/kernel_reuse_cache.h"
 #include "xla/service/gpu/kernels/custom_kernel.h"
+#include "xla/service/gpu/kernels/ptx_custom_kernel.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/model/tiled_hlo_computation.h"
@@ -993,9 +991,6 @@ absl::Status IrEmitterUnnested::EmitCuDnnThunk(
 
 absl::Status IrEmitterUnnested::EmitPtxCustomCall(
     const HloCustomCallInstruction* instr) {
-#if !GOOGLE_CUDA
-  return absl::UnimplementedError("PTX custom call support requires CUDA");
-#else
   absl::string_view backend_config_str = instr->raw_backend_config_string();
   if (backend_config_str.empty()) {
     return Internal("PTX custom call backend config is empty");
@@ -1004,39 +999,23 @@ absl::Status IrEmitterUnnested::EmitPtxCustomCall(
   PtxCall call =
       PtxCall::Parse(backend_config_str, ir_emitter_context_->mlir_context());
 
-  const std::string& kernel_name = call.name;
-  const absl::string_view ptx = call.source;
-
-  absl::Span<const int32_t> output_indices = call.output_indices;
-  LaunchDimensions launch_dimensions(call.block_dim, call.thread_dim);
-
-  se::GpuComputeCapability gpu_compute_capability =
-      ir_emitter_context_->gpu_compute_capability();
-  se::CudaComputeCapability* cuda_cc =
-      std::get_if<se::CudaComputeCapability>(&gpu_compute_capability);
+  emitters::KernelArguments::BufferAlignment buffer_alignment =
+      GetDefaultBufferAlignment();
+  TF_ASSIGN_OR_RETURN(
+      emitters::KernelArguments kernel_arguments,
+      emitters::KernelArguments::Create(
+          ir_emitter_context_->buffer_assignment(), buffer_alignment, instr,
+          instr->operands(), call.output_indices));
 
   TF_ASSIGN_OR_RETURN(
-      KernelArguments kernel_arguments,
-      KernelArguments::Create(ir_emitter_context_->buffer_assignment(), instr,
-                              instr->operands(), output_indices));
-
-  HloModuleConfig hlo_module_config = instr->GetModule()->config();
-
-  stream_executor::GpuAsmOpts options =
-      PtxOptsFromDebugOptions(hlo_module_config.debug_options());
-
-  TF_ASSIGN_OR_RETURN(std::vector<uint8_t> cubin,
-                      CompileGpuAsm(cuda_cc->major, cuda_cc->minor, ptx.data(),
-                                    options, /*cancel_if_reg_spill=*/false));
-
-  auto thunk = std::make_unique<KernelThunk>(
-      instr, kernel_name, kernel_arguments.args(), launch_dimensions,
-      std::nullopt, call.shared_mem, /*tma_metadata=*/std::nullopt,
-      std::move(call.source), std::move(cubin));
+      CustomKernel ptx_custom_kernel,
+      kernel::GetOwnedPtxCustomKernel(
+          call.name, call.source, kernel_arguments.args().size(),
+          call.block_dim, call.thread_dim, call.shared_mem));
+  auto thunk = std::make_unique<CustomKernelThunk>(instr, ptx_custom_kernel,
+                                                   kernel_arguments.args());
   AddThunkToThunkSequence(std::move(thunk));
-
   return absl::OkStatus();
-#endif  // GOOGLE_CUDA
 }
 
 absl::StatusOr<BufferAllocation::Slice>
