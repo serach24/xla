@@ -924,7 +924,10 @@ xla_test(
     name = "ptx_kernel_test",
     srcs = ["ptx_kernel_test.cc"],
     backends = ["gpu"],
-    tags = ["test_migrated_to_hlo_runner_pjrt"],
+    tags = [
+        "test_migrated_to_hlo_runner_pjrt",
+        "cuda-only",
+    ],
     deps = [
         "//xla/backends/gpu/runtime:kernel_thunk",
         "//xla/hlo/ir:hlo",

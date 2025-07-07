@@ -523,13 +523,22 @@ cc_library(
     srcs = ["ptx_kernel_call.cc"],
     hdrs = ["ptx_kernel_call.h"],
     deps = [
-        "//xla/stream_executor:launch_dim",
-        "@com_google_absl//absl/strings:string_view",
-        "@llvm-project//mlir:AsmParser",
+        ":launch_dimensions",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
-        "@llvm-project//mlir:Support",
-        "@tsl//tsl/platform:logging",
+    ],
+)
+
+xla_cc_test(
+    name = "ptx_kernel_call_test",
+    srcs = ["ptx_kernel_call_test.cc"],
+    deps = [
+        ":ptx_kernel_call",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_googletest//:gtest",
+        "@llvm-project//mlir:IR",
     ],
 )
 
