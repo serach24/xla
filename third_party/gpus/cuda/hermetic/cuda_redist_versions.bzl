@@ -317,6 +317,7 @@ CUDA_NCCL_WHEELS = {
     "12.6.3": CUDA_12_NCCL_WHEEL_DICT,
     "12.8.0": CUDA_12_NCCL_WHEEL_DICT,
     "12.8.1": CUDA_12_NCCL_WHEEL_DICT,
+    "13.0.0": CUDA_12_NCCL_WHEEL_DICT,
 }
 
 # Ensures PTX version compatibility w/ Clang & ptxas in cuda_configure.bzl
@@ -342,6 +343,7 @@ PTX_VERSION_DICT = {
         "12.6": "8.5",
         "12.8": "8.7",
         "12.9": "8.8",
+        "13.0": "8.9",
     },
 }
 
@@ -374,6 +376,7 @@ REDIST_VERSIONS_TO_BUILD_TEMPLATES = {
     "libcublas": {
         "repo_name": "cuda_cublas",
         "version_to_template": {
+            "13": "//third_party/gpus/cuda/hermetic:cuda_cublas.BUILD.tpl",
             "12": "//third_party/gpus/cuda/hermetic:cuda_cublas.BUILD.tpl",
             "11": "//third_party/gpus/cuda/hermetic:cuda_cublas.BUILD.tpl",
         },
@@ -389,6 +392,7 @@ REDIST_VERSIONS_TO_BUILD_TEMPLATES = {
     "libcufft": {
         "repo_name": "cuda_cufft",
         "version_to_template": {
+            "13": "//third_party/gpus/cuda/hermetic:cuda_cufft.BUILD.tpl",
             "11": "//third_party/gpus/cuda/hermetic:cuda_cufft.BUILD.tpl",
             "10": "//third_party/gpus/cuda/hermetic:cuda_cufft.BUILD.tpl",
         },
@@ -396,6 +400,7 @@ REDIST_VERSIONS_TO_BUILD_TEMPLATES = {
     "cuda_cupti": {
         "repo_name": "cuda_cupti",
         "version_to_template": {
+            "13": "//third_party/gpus/cuda/hermetic:cuda_cupti.BUILD.tpl",
             "12": "//third_party/gpus/cuda/hermetic:cuda_cupti.BUILD.tpl",
             "11": "//third_party/gpus/cuda/hermetic:cuda_cupti.BUILD.tpl",
         },
@@ -403,18 +408,21 @@ REDIST_VERSIONS_TO_BUILD_TEMPLATES = {
     "libcurand": {
         "repo_name": "cuda_curand",
         "version_to_template": {
+            "13": "//third_party/gpus/cuda/hermetic:cuda_curand.BUILD.tpl",
             "10": "//third_party/gpus/cuda/hermetic:cuda_curand.BUILD.tpl",
         },
     },
     "libcusolver": {
         "repo_name": "cuda_cusolver",
         "version_to_template": {
+            "13": "//third_party/gpus/cuda/hermetic:cuda_cusolver.BUILD.tpl",
             "11": "//third_party/gpus/cuda/hermetic:cuda_cusolver.BUILD.tpl",
         },
     },
     "libcusparse": {
         "repo_name": "cuda_cusparse",
         "version_to_template": {
+            "13": "//third_party/gpus/cuda/hermetic:cuda_cusparse.BUILD.tpl",
             "12": "//third_party/gpus/cuda/hermetic:cuda_cusparse.BUILD.tpl",
             "11": "//third_party/gpus/cuda/hermetic:cuda_cusparse.BUILD.tpl",
         },
@@ -453,6 +461,7 @@ REDIST_VERSIONS_TO_BUILD_TEMPLATES = {
     "cuda_nvdisasm": {
         "repo_name": "cuda_nvdisasm",
         "version_to_template": {
+            "13": "//third_party/gpus/cuda/hermetic:cuda_nvdisasm.BUILD",
             "12": "//third_party/gpus/cuda/hermetic:cuda_nvdisasm.BUILD",
         },
     },

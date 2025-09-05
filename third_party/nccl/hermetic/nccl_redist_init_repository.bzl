@@ -128,7 +128,8 @@ cuda_nccl_repo = repository_rule(
 
 def nccl_redist_init_repository(
         cuda_nccl_wheels = CUDA_NCCL_WHEELS,
-        redist_versions_to_build_templates = REDIST_VERSIONS_TO_BUILD_TEMPLATES):
+        redist_versions_to_build_templates = REDIST_VERSIONS_TO_BUILD_TEMPLATES,
+        _force_refresh = "v2"):  # Force repository re-execution for CUDA 13.0 support
     # buildifier: disable=function-docstring-args
     """Initializes NCCL repository."""
     nccl_artifacts_dict = {"sha256_dict": {}, "url_dict": {}}
