@@ -1190,8 +1190,8 @@ TEST_P(ParameterizedGemmRewriteTest, GemmTypeCombinationCheck) {
                            {"f16", "f16", true},
                            {"f32", "f32", true},
                            {"f64", "f64", true},
-                           {"c64", "c64", true},
-                           {"c128", "c128", true},
+                           {"c64", "c64", false},
+                           {"c128", "c128", false},
                            // add mix type gemm
                            {"s8", "s32", true},
                            {"s8", "f32", true},
@@ -1227,7 +1227,6 @@ TEST_P(ParameterizedGemmRewriteTest, GemmTypeCombinationCheck) {
                              more_type_combinations.begin(),
                              more_type_combinations.end());
   }
-
   for (const auto& type_combination : type_combinations) {
     absl::flat_hash_map<absl::string_view, absl::string_view> replacements;
     replacements["<<ABType>>"] = std::get<0>(type_combination);

@@ -161,6 +161,8 @@ inline std::optional<fe::DataType_t> ToCudnnDataType(const PrimitiveType type) {
       return t::FP8_E8M0;
     case PrimitiveType::F4E2M1FN:
       return t::FP4_E2M1;
+    case PrimitiveType::F64:
+      return t::DOUBLE;
     default:
       return std::nullopt;
   }
@@ -174,6 +176,13 @@ inline std::optional<fe::DataType_t> GetComputeDataType(
     compute_dtype = fe::DataType_t::INT32;
 #else
     VLOG(3) << "Integer math requires cuDNN 9.1+.";
+    return std::nullopt;
+#endif  // CUDNN_VERSION
+  } else if (type == PrimitiveType::F64) {
+#if CUDNN_VERSION >= 91400
+    compute_dtype = fe::DataType_t::DOUBLE;
+#else
+    VLOG(3) << "Double math requires cuDNN 9.14+.";
     return std::nullopt;
 #endif  // CUDNN_VERSION
   }
