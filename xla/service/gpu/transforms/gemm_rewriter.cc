@@ -469,7 +469,6 @@ auto CublasLtMatmul(HloInstruction** instr) {
 }
 
 auto CublasLtMatmulF8(HloInstruction** instr) {
-
   return m::CustomCall(instr, {kCublasLtMatmulF8CallTarget});
 }
 
@@ -577,9 +576,9 @@ auto OptionalBitcast(HloInstruction** optional_bitcast, Pattern pattern) {
 // 4 requires steps 5 and 6, i.e. the computation of DAmax can be elided only
 // when the output of the GEMM is requested in FP8 format.
 class GemmRewriterVisitor : public DfsHloRewriteVisitor {
-  absl::Status ReplaceDotWithCustomFusion(HloInstruction *dot) {
+  absl::Status ReplaceDotWithCustomFusion(HloInstruction* dot) {
     HloComputation::Builder builder(absl::StrCat(dot->name(), "_computation"));
-    std::vector<HloInstruction *> fusion_inputs;
+    std::vector<HloInstruction*> fusion_inputs;
     fusion_inputs.reserve(dot->operand_count());
     for (int i = 0; i < dot->operand_count(); ++i) {
       TF_ASSIGN_OR_RETURN(
@@ -590,10 +589,10 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
     }
     builder.AddInstruction(
         dot->CloneWithNewOperands(dot->shape(), fusion_inputs));
-    HloComputation *computation =
+    HloComputation* computation =
         dot->GetModule()->AddComputationAndUnifyNamesAndIds(builder.Build(),
                                                             /*is_entry=*/false);
-    HloInstruction *fusion =
+    HloInstruction* fusion =
         dot->parent()->AddInstruction(HloInstruction::CreateFusion(
             computation->root_instruction()->shape(),
             HloInstruction::FusionKind::kCustom, dot->operands(), computation));
@@ -601,7 +600,7 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
 
     TF_ASSIGN_OR_RETURN(auto gpu_config,
                         fusion->backend_config<GpuBackendConfig>());
-    FusionBackendConfig &backend_config =
+    FusionBackendConfig& backend_config =
         *gpu_config.mutable_fusion_backend_config();
     backend_config.set_kind(std::string(kCuDnnFusionKind));
     // cuDNN will always use cuBLAS for simple enough dot fusions at plan 0;
@@ -687,9 +686,6 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
     // TODO: support all these
     bool use_custom_fusion =
         !is_lhs_vector && !is_rhs_vector &&
-        absl::c_none_of(
-            std::vector<PrimitiveType>{F64, C64, C128},
-            [&](int x) { return x == instr->shape().element_type(); }) &&
         gemm_backend_config.precision_config().algorithm() ==
             PrecisionConfig::ALG_UNSET &&
         absl::c_all_of(instr->precision_config().operand_precision(),
@@ -739,10 +735,9 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
           if (use_custom_fusion) {
             TF_RETURN_IF_ERROR(ReplaceDotWithCustomFusion(instr));
           } else {
-          return absl::UnimplementedError(
-                  "ErRoR");
+            return absl::UnimplementedError("ErRoR");
             // Rewrite non-FP8 GEMMs into a cublas or cublasLT Custom Call.
-        }
+          }
         }
       } break;
     };
@@ -750,8 +745,8 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
   }
 
   absl::Status TurnDotIntoConvertAndDotForBF16BF16F32(
-      HloInstruction *instr, GemmBackendConfig &gemm_backend_config,
-      GpuBackendConfig &gpu_backend_config, bool use_custom_fusion) {
+      HloInstruction* instr, GemmBackendConfig& gemm_backend_config,
+      GpuBackendConfig& gpu_backend_config, bool use_custom_fusion) {
     auto lhs_shape = instr->operand(0)->shape();
     lhs_shape.set_element_type(BF16);
     auto lhs_convert = instr->mutable_operand(0)->AddInstruction(

@@ -1190,8 +1190,8 @@ TEST_P(ParameterizedGemmRewriteTest, GemmTypeCombinationCheck) {
                            {"f16", "f16", true},
                            {"f32", "f32", true},
                            {"f64", "f64", true},
-                           {"c64", "c64", false},
-                           {"c128", "c128", false},
+                           {"c64", "c64", true},
+                           {"c128", "c128", true},
                            // add mix type gemm
                            {"s8", "s32", true},
                            {"s8", "f32", true},
@@ -1212,10 +1212,10 @@ TEST_P(ParameterizedGemmRewriteTest, GemmTypeCombinationCheck) {
             {"s32", "f32", false},  {"s32", "f64", false},
             {"s32", "c64", false},  {"s32", "c128", false},
 
-            {"f16", "bf16", false}, {"f16", "f64", false},
+            {"f16", "bf16", true}, {"f16", "f64", false},
             {"f16", "c64", false},  {"f16", "c128", false},
 
-            {"bf16", "f16", false}, {"bf16", "f64", false},
+            {"bf16", "f16", true}, {"bf16", "f64", false},
             {"bf16", "c64", false}, {"bf16", "c128", false},
 
             {"f32", "f64", false},  {"f32", "c64", false},
